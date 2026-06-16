@@ -1,0 +1,3 @@
+# Generated at build time — never commit compiled objects or the patched source
+*.o
+sqlite-vec.patched.c

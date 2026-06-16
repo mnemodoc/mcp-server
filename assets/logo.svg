@@ -1,0 +1,91 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="mnemodoc logo">
+  <defs>
+    <linearGradient id="rMetal" x1="70" y1="110" x2="180" y2="190" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5eead4"/><stop offset="1" stop-color="#0f9488"/>
+    </linearGradient>
+    <linearGradient id="rFace" x1="150" y1="120" x2="180" y2="185" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7df0dc"/><stop offset="1" stop-color="#17b6a6"/>
+    </linearGradient>
+    <linearGradient id="rCollar" x1="82" y1="112" x2="178" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7df0dc"/><stop offset="0.5" stop-color="#23c2b0"/><stop offset="1" stop-color="#0c6e64"/>
+    </linearGradient>
+    <linearGradient id="rDome" x1="92" y1="64" x2="172" y2="118" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#e6fdf8" stop-opacity="0.55"/>
+      <stop offset="0.5" stop-color="#a7ece1" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#7fd9cc" stop-opacity="0.12"/>
+    </linearGradient>
+    <radialGradient id="rEye" cx="0.4" cy="0.35" r="0.7">
+      <stop offset="0" stop-color="#ffe9a8"/><stop offset="0.5" stop-color="#f5b942"/><stop offset="1" stop-color="#d98a1f"/>
+    </radialGradient>
+    <radialGradient id="rGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#f5b942" stop-opacity="0.30"/><stop offset="1" stop-color="#f5b942" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="rEyeGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#f5b942" stop-opacity="0.45"/><stop offset="1" stop-color="#f5b942" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- antenna (from dome apex) -->
+  <line x1="132" y1="63" x2="130" y2="44" stroke="#0f9488" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="129" cy="40" r="7" fill="url(#rEye)"/>
+  <circle cx="127" cy="38" r="2" fill="#fff3cf"/>
+
+  <!-- robot face / head (profile facing right) -->
+  <path d="M92 116 C 78 118 72 138 74 156 C 76 174 90 184 108 184
+           L 150 184 C 170 184 178 172 178 156 L 178 138
+           C 178 124 170 116 156 116 Z"
+        fill="url(#rMetal)" stroke="#0c6e64" stroke-width="2.5"/>
+  <path d="M150 120 C 168 120 174 130 174 142 L 174 156 C 174 170 166 180 152 180
+           C 158 168 158 132 150 120 Z" fill="url(#rFace)" opacity="0.8"/>
+
+  <!-- ear bolt -->
+  <circle cx="104" cy="150" r="11" fill="#0f9488" stroke="#0c6e64" stroke-width="2"/>
+  <circle cx="104" cy="150" r="4" fill="#5eead4"/>
+
+  <!-- eye (with glow) -->
+  <circle cx="150" cy="146" r="18" fill="url(#rEyeGlow)"/>
+  <circle cx="150" cy="146" r="13" fill="#0c3b36"/>
+  <circle cx="150" cy="146" r="9" fill="url(#rEye)"/>
+  <circle cx="146" cy="142" r="2.6" fill="#fff7e0"/>
+
+  <!-- mouth -->
+  <g stroke="#0c6e64" stroke-width="3" stroke-linecap="round">
+    <line x1="140" y1="168" x2="160" y2="168"/>
+    <line x1="142" y1="174" x2="158" y2="174"/>
+  </g>
+
+  <!-- glass dome (cranium) -->
+  <path d="M86 117 C 84 85 109 63 132 63 C 155 63 180 85 178 117 Z" fill="url(#rDome)"/>
+
+  <!-- atom brain -->
+  <circle cx="129" cy="90" r="30" fill="url(#rGlow)"/>
+<g>
+<g transform="rotate(120 129 90)"><ellipse cx="129" cy="90" rx="27" ry="9" fill="none" stroke="#2dd4bf" stroke-width="2.2" stroke-opacity="0.5"/></g><g transform="rotate(60 129 90)"><ellipse cx="129" cy="90" rx="27" ry="9" fill="none" stroke="#2dd4bf" stroke-width="2.2" stroke-opacity="0.7"/></g><g transform="rotate(0 129 90)"><ellipse cx="129" cy="90" rx="27" ry="9" fill="none" stroke="#2dd4bf" stroke-width="2.2" stroke-opacity="0.95"/></g><circle cx="156.0" cy="90.0" r="3.3" fill="#f5b942" stroke="#b9740f" stroke-width="0.8"/><circle cx="155.0" cy="89.0" r="1" fill="#fff3cf"/><circle cx="102.0" cy="90.0" r="3.3" fill="#f5b942" stroke="#b9740f" stroke-width="0.8"/><circle cx="101.0" cy="89.0" r="1" fill="#fff3cf"/><circle cx="142.5" cy="113.4" r="3.3" fill="#f5b942" stroke="#b9740f" stroke-width="0.8"/><circle cx="141.5" cy="112.4" r="1" fill="#fff3cf"/><circle cx="142.5" cy="66.6" r="3.3" fill="#f5b942" stroke="#b9740f" stroke-width="0.8"/><circle cx="141.5" cy="65.6" r="1" fill="#fff3cf"/>
+<line x1="139.9" y1="103.0" x2="148.3" y2="113.0" stroke="#caa24a" stroke-width="6" stroke-linecap="round"/>
+<line x1="139.9" y1="103.0" x2="148.3" y2="113.0" stroke="#8a5e22" stroke-width="2" stroke-linecap="round" stroke-opacity="0.4"/>
+<circle cx="129" cy="90" r="17" fill="#0c3b36" fill-opacity="0.22"/>
+<circle cx="129" cy="90" r="17" fill="none" stroke="#f3dca0" stroke-width="4"/>
+<circle cx="129" cy="90" r="19" fill="none" stroke="#8a5e22" stroke-width="1.3" stroke-opacity="0.45"/>
+<path d="M120 83 A 13 13 0 0 1 130 77" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-opacity="0.6"/>
+<circle cx="129.0" cy="97.0" r="4.6" fill="#f5b942" stroke="#b9740f" stroke-width="1"/><circle cx="127.6" cy="95.6" r="1.5" fill="#fff3cf"/><circle cx="122.9" cy="86.5" r="4.6" fill="#f5b942" stroke="#b9740f" stroke-width="1"/><circle cx="121.5" cy="85.1" r="1.5" fill="#fff3cf"/><circle cx="135.1" cy="86.5" r="4.6" fill="#f5b942" stroke="#b9740f" stroke-width="1"/><circle cx="133.7" cy="85.1" r="1.5" fill="#fff3cf"/>
+</g>
+
+  <!-- glass reflection streaks -->
+  <path d="M103 110 C 99 88 110 74 124 69" fill="none" stroke="#ffffff" stroke-width="4" stroke-linecap="round" stroke-opacity="0.5"/>
+  <path d="M113 112 C 110 94 117 84 127 79" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-opacity="0.35"/>
+
+  <!-- dome rim (glass edge) -->
+  <path d="M86 117 C 84 85 109 63 132 63 C 155 63 180 85 178 117" fill="none" stroke="#8af0e2" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M86 117 C 84 85 109 63 132 63 C 155 63 180 85 178 117" fill="none" stroke="#0c6e64" stroke-width="1" stroke-linecap="round" stroke-opacity="0.35"/>
+
+  <!-- metal collar holding the glass -->
+  <path d="M84 114 Q128 124 174 114 Q178 119 174 125 Q128 136 84 125 Q80 119 84 114 Z"
+        fill="url(#rCollar)" stroke="#0c6e64" stroke-width="2"/>
+  <path d="M90 117 Q128 126 168 117" fill="none" stroke="#aef5ea" stroke-width="1.6" stroke-opacity="0.7"/>
+  <circle cx="92" cy="120" r="2.2" fill="#0c6e64"/>
+  <circle cx="166" cy="120" r="2.2" fill="#0c6e64"/>
+
+  <!-- neck -->
+  <rect x="112" y="184" width="40" height="14" fill="#0f9488"/>
+  <rect x="108" y="196" width="48" height="8" rx="4" fill="#0c6e64"/>
+</svg>

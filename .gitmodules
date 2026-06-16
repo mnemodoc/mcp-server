@@ -1,0 +1,3 @@
+[submodule "ext/sqlite-vec"]
+	path = ext/sqlite-vec
+	url = https://github.com/asg017/sqlite-vec.git

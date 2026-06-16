@@ -1,0 +1,44 @@
+name: mnemodoc-server
+
+version: 1.0.0
+
+crystal: ">= 1.18.0"
+
+license: MIT
+
+authors:
+  - Nicolas Rodriguez <nico@nicoladmin.fr>
+
+targets:
+  mnemodoc-server:
+    main: src/mnemodoc-server.cr
+
+dependencies:
+  mcp:
+    github: mnemodoc/mcp.cr
+    version: ~> 1.0
+  admiral:
+    github: jwaldrip/admiral.cr
+  crystal-env:
+    github: crystal-lang/crystal-env
+    branch: master
+  sqlite3:
+    github: crystal-lang/crystal-sqlite3
+  markd:
+    github: icyleaf/markd
+  tallboy:
+    github: epoch/tallboy
+  baked_file_system:
+    github: schovi/baked_file_system
+    version: ~> 0.14.0
+  qdrant-client:
+    github: jbox-web/qdrant-client.cr
+    branch: master   # switch to `version: ~> 0.1` once a tag is pushed
+
+development_dependencies:
+  ameba:
+    github: crystal-ameba/ameba
+    version: ~> 1.6.0
+  spectator:
+    gitlab: arctic-fox/spectator
+    version: ~> 0.12.0

@@ -1,0 +1,27 @@
+# Ignore generated data
+/docs/
+/lib/
+/packages/
+
+# Ignore all bin files except the placeholder
+/bin/*
+!/bin/.keep
+
+# Ignore MacOS files
+.DS_Store
+
+# Ignore mnemodoc-server runtime data
+/index.db
+*.log
+
+# Ignore Spectator test failure cache
+/.spectator-failures
+
+# Ignore local Claude Code settings and plans
+/.claude/settings.local.json
+
+# Local shard path overrides (dev only)
+/shard.override.yml
+
+# Assembled at build time from licenses.manifest; baked into the binary
+/licenses/

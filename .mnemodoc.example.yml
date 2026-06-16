@@ -1,0 +1,58 @@
+paths:
+  - doc/claude/
+  - app/
+
+# exclude:
+#   - "**/templates/**"
+
+ollama:
+  host: http://localhost:11434
+  model: nomic-embed-text
+  timeout: 30
+  batch_size: 10
+
+search:
+  top_k: 5
+  mode: hybrid          # hybrid | semantic | keyword
+  recency_days: 7
+  recency_boost: 0.1    # multiplicative: recent files score ×(1 + boost)
+  keyword_weight: 0.3   # weight of keyword vs semantic (1.0) in hybrid fusion
+  # backend: vec0       # semantic KNN backend: vec0 (embedded, default) | qdrant (opt-in)
+
+# Opt-in Qdrant backend (required when search.backend: qdrant). SQLite stays the
+# source of truth; Qdrant is a best-effort, rebuildable KNN index keyed by chunk id.
+# qdrant:
+#   url: https://my-qdrant:6333   # Qdrant endpoint (api-key header auth)
+#   api_key:                      # optional; or env QDRANT_API_KEY
+#   collection:                   # optional; default = project key (basename-hash)
+
+server:
+  sse_host: 127.0.0.1 # bind address for SSE; the endpoint is UNAUTHENTICATED — use 0.0.0.0 only to expose it deliberately
+  sse_port: 8765
+  log_file: stderr    # stderr | stdout | /path/to/file.log
+  log_level: info     # trace | debug | info | warn | error | fatal | off
+
+db:
+  # default: ~/.local/share/mnemodoc-server/<basename>-<hash>/index.db
+  #   (basename + SHA-1 prefix of the config file's directory — each project gets an isolated index)
+  # path: /custom/path/to/index.db
+
+index:
+  concurrency: 4      # parallel files indexed at once (>= 1)
+  pdf: false          # opt-in PDF indexing; requires `pdftotext` in PATH, skips PDFs otherwise
+
+# Contextual roles (optional): the get_project_context MCP tool and the `context`
+# CLI command select which conventions Claude should adopt for the files/task/query
+# at hand. Role file paths resolve relative to this config file, like `paths`.
+# context:
+#   default: doc/claude/roles/generalist.md  # fallback when no rule fires and there is no signal
+#   roles:
+#     - file: doc/claude/roles/backend.md
+#       description: Backend conventions — operations, persistence, policies  # used for the semantic tie-break
+#       when_files: ["app/models/**", "app/policies/**"]  # glob triggers on the edited file paths
+#       when_task:  ["implement", "refactor"]             # substring triggers on the task kind
+#       when_query: ["operation", "policy", "persistence"] # substring triggers on the user query
+#     - file: doc/claude/roles/frontend.md
+#       description: Stimulus controllers, Turbo Streams, HAML views
+#       when_files: ["app/frontend/**", "app/views/**"]
+#       when_query: ["stimulus", "turbo", "view"]

@@ -1,0 +1,69 @@
+name: Update Homebrew tap
+
+on:
+  workflow_run:
+    workflows: ["Release Binaries"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (without v prefix, e.g. 1.0.0)"
+        required: true
+
+jobs:
+  update-tap:
+    name: Bump formula in mnemodoc/homebrew-tap
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Compute version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "value=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${{ github.event.workflow_run.head_branch }}"
+            echo "value=${TAG#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download binaries and compute SHA256
+        id: shas
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          BASE="https://github.com/mnemodoc/mcp-server/releases/download/v${VERSION}"
+          for ASSET in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+            curl -fsSL -o "$ASSET" "${BASE}/mnemodoc-server-${ASSET}"
+            SHA=$(sha256sum "$ASSET" | awk '{print $1}')
+            echo "${ASSET//-/_}=$SHA" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: mnemodoc/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.version.outputs.value }}"
+          python3 homebrew-tap/scripts/update_formula.py \
+            --formula homebrew-tap/Formula/mnemodoc-server.rb \
+            --version "$VERSION" \
+            --darwin-arm64 "${{ steps.shas.outputs.darwin_arm64 }}" \
+            --darwin-amd64 "${{ steps.shas.outputs.darwin_amd64 }}" \
+            --linux-arm64  "${{ steps.shas.outputs.linux_arm64 }}" \
+            --linux-amd64  "${{ steps.shas.outputs.linux_amd64 }}"
+
+      - name: Open PR on tap
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: homebrew-tap
+          branch: bump/mnemodoc-server-${{ steps.version.outputs.value }}
+          title: "chore: bump mnemodoc-server to v${{ steps.version.outputs.value }}"
+          body: |
+            Automated bump triggered by release `v${{ steps.version.outputs.value }}`.
+
+            SHA256 checksums updated for all four platform binaries.
+          commit-message: "chore: bump mnemodoc-server to v${{ steps.version.outputs.value }}"

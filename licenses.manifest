@@ -1,0 +1,27 @@
+# kind | name | source (on-disk LICENSE path for shards; SPDX id for clib/runtime)
+shard   | mcp               | lib/mcp/LICENSE
+shard   | admiral           | lib/admiral/LICENSE
+shard   | crystal-env       | lib/crystal-env/LICENSE
+shard   | sqlite3           | lib/sqlite3/LICENSE
+shard   | db                | lib/db/LICENSE
+shard   | markd             | lib/markd/LICENSE
+shard   | tallboy           | lib/tallboy/LICENSE
+shard   | baked_file_system | lib/baked_file_system/LICENSE
+shard   | qdrant-client     | lib/qdrant-client/LICENSE
+shard   | qdrant-api        | lib/qdrant-api/LICENSE
+shard   | crest             | lib/crest/LICENSE
+shard   | http-client-digest_auth | lib/http-client-digest_auth/LICENSE
+shard   | http_proxy        | lib/http_proxy/LICENSE
+shard   | sqlite-vec        | ext/sqlite-vec/LICENSE-MIT
+clib    | openssl           | Apache-2.0
+clib    | pcre2             | BSD-3-Clause
+clib    | libyaml           | MIT
+clib    | libxml2           | MIT
+clib    | zlib              | Zlib
+clib    | liblzma           | 0BSD
+clib    | sqlite            | public-domain
+clib    | boehm-gc          | Boehm-GC
+clib    | musl              | MIT
+clib    | libgcc            | GCC-runtime-exception
+runtime | crystal           | Apache-2.0
+project | mnemodoc-server   | LICENSE

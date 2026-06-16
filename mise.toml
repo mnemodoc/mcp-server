@@ -1,0 +1,197 @@
+[tools]
+crystal = "1.18.2"
+
+[vars]
+APP_NAME    = "mnemodoc-server"
+SOURCE_FILE = "src/{{vars.APP_NAME}}.cr"
+# OUTPUT_FILE defaults to bin/<APP_NAME> in dev; overridden by env var for release
+# (e.g. OUTPUT_FILE=bin/mnemodoc-server-darwin-arm64 mise release:build)
+OUTPUT_FILE = "{% if get_env(name='OUTPUT_FILE', default='false') == 'false' %}bin/{{vars.APP_NAME}}{% else %}{{ get_env(name='OUTPUT_FILE') }}{% endif %}"
+
+DEFAULT_COMPILE_OPTS_DEV     = "--threads 4"
+DEFAULT_COMPILE_OPTS_RELEASE = "--threads 4 --release --error-trace"
+
+OLLAMA_MODEL     = "nomic-embed-text"
+OLLAMA_PORT      = "11434"
+OLLAMA_CONTAINER = "dev.{{vars.APP_NAME}}.ollama"
+
+# Add --progress only when running in an interactive terminal (TTY check)
+SPEC_OPTS            = "{% if exec(command='(tty -s && echo true) || echo false') == 'true' %}--verbose{% endif %}"
+COMPILE_OPTS_DEV     = "{% if exec(command='(tty -s && echo true) || echo false') == 'true' %}{{vars.DEFAULT_COMPILE_OPTS_DEV}} --progress{% else %}{{vars.DEFAULT_COMPILE_OPTS_DEV}}{% endif %}"
+COMPILE_OPTS_RELEASE = "{% if exec(command='(tty -s && echo true) || echo false') == 'true' %}{{vars.DEFAULT_COMPILE_OPTS_RELEASE}} --progress{% else %}{{vars.DEFAULT_COMPILE_OPTS_RELEASE}}{% endif %}"
+
+
+#####################
+# Development tasks #
+#####################
+
+[tasks."dev:build"]
+description = "Compile to development binary"
+depends = ["dev:vec0-objects", "dev:licenses"]
+run = "crystal build {{vars.COMPILE_OPTS_DEV}} -o {{vars.OUTPUT_FILE}} {{vars.SOURCE_FILE}}"
+
+[tasks."dev:deps"]
+description = "Install development dependencies"
+run = "shards install"
+
+[tasks."dev:clean"]
+description = "Cleanup environment"
+run = "rm -rf bin/* lib/"
+
+[tasks."dev:spec"]
+description = "Run Crystal spec"
+# Specs compile the full app: they link the vec0 objects (@[Link]) and bake the
+# licenses/ folder (baked_file_system, at compile time). Both are generated, so
+# depend on their tasks — otherwise a standalone `mise dev:spec` (e.g. in CI,
+# which doesn't run dev:build first) fails to compile.
+depends = ["dev:vec0-objects", "dev:licenses"]
+run = "crystal spec {{vars.SPEC_OPTS}}"
+
+[tasks."dev:doc"]
+description = "Generate project documentation"
+run = "rm -rf docs && crystal doc"
+
+[tasks."dev:ameba"]
+description = "Run static code analysis"
+run = "bin/ameba"
+
+[tasks."dev:check"]
+description = "Build, lint and test in one shot"
+run = "mise dev:build && mise dev:ameba && mise dev:spec"
+
+[tasks."dev:format"]
+description = "Format code"
+run = "crystal tool format src/"
+
+[tasks."dev:licenses"]
+description = "Assemble the licenses/ folder baked into the binary"
+run = "bash scripts/harvest-licenses.sh"
+
+[tasks."dev:qdrant-up"]
+description = "Start a local Qdrant container (for opt-in integration specs)"
+run = "docker run -d --rm --name dev.mnemodoc-server.qdrant -p 6333:6333 qdrant/qdrant >/dev/null && echo 'Qdrant up — run specs with QDRANT_TEST_URL=http://localhost:6333'"
+
+[tasks."dev:qdrant-down"]
+description = "Stop the local Qdrant container"
+run = "docker rm -f dev.mnemodoc-server.qdrant >/dev/null 2>&1 || true"
+
+[tasks."dev:vec0-objects"]
+description = "Generate the sqlite-vec header and compile vendored objects (dev)"
+run = '''
+set -e
+SUBMODULE=ext/sqlite-vec
+VENDOR=vendor
+
+if [ ! -f "$SUBMODULE/sqlite-vec.c" ]; then
+  echo "ext/sqlite-vec is empty — run: git submodule update --init" >&2
+  exit 1
+fi
+
+# Generate sqlite-vec.h from the template. Replicates upstream's Make rule
+# (cut logic verbatim) but without git: DATE/SOURCE are cosmetic constants
+# the Crystal binary never reads, so we avoid depending on submodule git
+# history (which is unavailable in the Docker COPY-ext context).
+VERSION="$(cat "$SUBMODULE/VERSION")"
+export VERSION
+export VERSION_MAJOR="$(echo "$VERSION" | cut -d. -f1)"
+export VERSION_MINOR="$(echo "$VERSION" | cut -d. -f2)"
+export VERSION_PATCH="$(echo "$VERSION" | cut -d. -f3 | cut -d- -f1)"
+export DATE="$(date -u +%FT%TZ)"
+export SOURCE="$(git -C "$SUBMODULE" rev-parse HEAD 2>/dev/null || echo unknown)"
+envsubst < "$SUBMODULE/sqlite-vec.h.tmpl" > "$SUBMODULE/sqlite-vec.h"
+
+# Patch out 3 non-portable BSD typedefs (typedef u_int8_t uint8_t; …) that
+# upstream guards only against Windows/wasm. u_int8_t is undefined on musl, so
+# the Alpine release build fails (and cascades: u8 resolves to int). The
+# amalgamation we previously vendored had these removed; we reproduce that by
+# compiling a patched copy, leaving the submodule pristine. See the bump note
+# in CLAUDE.md before changing the pinned version.
+echo "Compiling sqlite-vec objects..."
+sed -e '/typedef u_int8_t uint8_t;/d' \
+    -e '/typedef u_int16_t uint16_t;/d' \
+    -e '/typedef u_int64_t uint64_t;/d' \
+    "$SUBMODULE/sqlite-vec.c" > "$VENDOR/sqlite-vec.patched.c"
+cc -O2 -DSQLITE_CORE -I"$SUBMODULE" -c "$VENDOR/sqlite-vec.patched.c" -o "$VENDOR/sqlite-vec.o"
+cc -O2 -c "$VENDOR/vec0_shim.c" -o "$VENDOR/vec0_shim.o"
+echo "sqlite-vec objects ready"
+'''
+
+[tasks."dev:docker-image"]
+description = "Build local multiplatforms Docker image for local development"
+run = "docker buildx bake docker-image"
+
+# TODO: remove me when https://github.com/crystal-lang/crystal/issues/16746 is fixed
+[tasks."dev:fix-shards-command"]
+description = "Fix missing shards command"
+run = "cp $HOME/.local/share/mise/installs/crystal/{{tools.crystal.version}}/embedded/bin/shards $HOME/.local/share/mise/installs/crystal/{{tools.crystal.version}}/bin/"
+
+[tasks."dev:ollama"]
+description = "Start native Ollama (Metal GPU on macOS) and pull the embedding model"
+run = '''
+if ! command -v ollama >/dev/null 2>&1; then
+  echo "ollama not found. Install it with: brew install ollama" >&2
+  exit 1
+fi
+if ! curl -sf http://localhost:{{vars.OLLAMA_PORT}}/api/tags >/dev/null 2>&1; then
+  brew services start ollama 2>/dev/null || (ollama serve >/dev/null 2>&1 &)
+fi
+echo "Waiting for Ollama to be ready..."
+for i in $(seq 1 30); do
+  curl -sf http://localhost:{{vars.OLLAMA_PORT}}/api/tags >/dev/null 2>&1 && break
+  sleep 1
+done
+ollama pull {{vars.OLLAMA_MODEL}}
+'''
+
+
+################
+# Docker tasks #
+################
+
+[tasks."docker:ollama"]
+description = "Start the Ollama container and pull the embedding model (CPU-only on macOS — prefer dev:ollama)"
+run = '''
+if [ -z "$(docker ps -q -f name=^{{vars.OLLAMA_CONTAINER}}$)" ]; then
+  if [ -n "$(docker ps -aq -f name=^{{vars.OLLAMA_CONTAINER}}$)" ]; then
+    docker start {{vars.OLLAMA_CONTAINER}}
+  else
+    docker run -d --name {{vars.OLLAMA_CONTAINER}} -p {{vars.OLLAMA_PORT}}:11434 -v {{vars.OLLAMA_CONTAINER}}:/root/.ollama ollama/ollama
+  fi
+fi
+echo "Waiting for Ollama to be ready..."
+for i in $(seq 1 30); do
+  curl -sf http://localhost:{{vars.OLLAMA_PORT}}/api/tags >/dev/null 2>&1 && break
+  sleep 1
+done
+docker exec {{vars.OLLAMA_CONTAINER}} ollama pull {{vars.OLLAMA_MODEL}}
+'''
+
+
+#################
+# Release tasks #
+#################
+
+[tasks."release:build"]
+description = "Compile to production binary"
+run = '''
+crystal build {{vars.COMPILE_OPTS_RELEASE}} -o {{vars.OUTPUT_FILE}} {{vars.SOURCE_FILE}}
+cd bin; for f in *; do shasum --algorithm 256 $f > $f.sha256; done
+'''
+
+[tasks."release:deps"]
+description = "Install production dependencies"
+run = "shards install --production"
+
+[tasks."release:static"]
+description = "Build static binaries for linux/amd64 and linux/arm64 via Docker buildx"
+run = '''
+# Ensure the sqlite-vec submodule is checked out before the build context is
+# sent — the Dockerfile COPY ext/ needs its files present.
+git submodule update --init --recursive
+docker buildx bake binary
+mv packages/linux_arm64/mnemodoc-server-linux-arm64 packages/
+mv packages/linux_amd64/mnemodoc-server-linux-amd64 packages/
+rmdir packages/linux_arm64/ packages/linux_amd64/
+rm -f packages/*.sha256
+cd packages; for f in *; do shasum --algorithm 256 $f > $f.sha256; done
+'''

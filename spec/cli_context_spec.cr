@@ -1,0 +1,60 @@
+require "./spec_helper"
+require "file_utils"
+
+# Exercises the `context` CLI subcommand end-to-end by running the built binary
+# as a subprocess. A subprocess is used (rather than an in-process Admiral run)
+# because the command writes the role markdown to the real STDOUT and signals
+# failures with a non-zero process exit — both contracts only observable from
+# outside the process. The binary is produced by `mise dev:build`, which
+# `mise dev:check` runs before the specs.
+Spectator.describe "context CLI command" do
+  # Path to the dev binary, resolved relative to this spec file.
+  let(binary) { File.expand_path(File.join(__DIR__, "..", "bin", "mnemodoc-server")) }
+  let(tmp_dir) { "/tmp/mnemodoc-cli-context-#{Random::Secure.hex(4)}" }
+  let(config_path) { File.join(tmp_dir, ".mnemodoc.yml") }
+
+  before_each { Dir.mkdir_p(tmp_dir) }
+  after_each { FileUtils.rm_rf(tmp_dir) }
+
+  # Writes a config whose context section declares two file-glob roles and no
+  # default, then drops their markdown files next to it so role paths resolve.
+  private def write_fixture
+    File.write(File.join(tmp_dir, "crystal.md"), "# Crystal role\nUse idiomatic Crystal.")
+    File.write(File.join(tmp_dir, "rails.md"), "# Rails role\nFollow Rails conventions.")
+    File.write(config_path, <<-YAML)
+    context:
+      roles:
+        - file: crystal.md
+          when_files: ["**/*.cr"]
+        - file: rails.md
+          when_files: ["**/*.rb"]
+    YAML
+  end
+
+  # Runs the binary's `context` subcommand and returns stdout, stderr, and the
+  # process exit code.
+  private def run_context(args : Array(String))
+    out_io = IO::Memory.new
+    err_io = IO::Memory.new
+    status = Process.run(binary, ["context"] + args, output: out_io, error: err_io)
+    {out: out_io.to_s, err: err_io.to_s, code: status.exit_code}
+  end
+
+  it "prints the decisively selected role's markdown to stdout with exit 0" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    result = run_context(["--config", config_path, "--files", "src/foo.cr"])
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to contain("Crystal role")
+    expect(result[:out]).not_to contain("Rails role")
+  end
+
+  it "writes an error to stderr and exits non-zero when there is no signal" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    result = run_context(["--config", config_path])
+    expect(result[:code]).not_to eq(0)
+    expect(result[:err]).to contain("Error:")
+    expect(result[:out]).to be_empty
+  end
+end

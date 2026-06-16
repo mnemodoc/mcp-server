@@ -1,0 +1,62 @@
+version: 2.0
+shards:
+  admiral:
+    git: https://github.com/jwaldrip/admiral.cr.git
+    version: 1.12.1
+
+  ameba:
+    git: https://github.com/crystal-ameba/ameba.git
+    version: 1.6.4
+
+  baked_file_system:
+    git: https://github.com/schovi/baked_file_system.git
+    version: 0.14.0
+
+  crest:
+    git: https://github.com/mamantoha/crest.git
+    version: 1.3.13
+
+  crystal-env:
+    git: https://github.com/crystal-lang/crystal-env.git
+    version: 0.1.0+git.commit.05a1d92cfbb11a75a0077323b9631a467b7a6b91
+
+  db:
+    git: https://github.com/crystal-lang/crystal-db.git
+    version: 0.14.0
+
+  http-client-digest_auth:
+    git: https://github.com/mamantoha/http-client-digest_auth.git
+    version: 0.6.0
+
+  http_proxy:
+    git: https://github.com/mamantoha/http_proxy.git
+    version: 0.15.1
+
+  markd:
+    git: https://github.com/icyleaf/markd.git
+    version: 0.5.0
+
+  mcp:
+    git: https://github.com/mnemodoc/mcp.cr.git
+    version: 1.0.0
+
+  qdrant-api:
+    git: https://github.com/jbox-web/qdrant-api.cr.git
+    version: 0.1.0+git.commit.d75d0f6a91c3c6cebe4678bc24ae12c806b2b821
+
+  qdrant-client:
+    git: https://github.com/jbox-web/qdrant-client.cr.git
+    version: 0.1.0+git.commit.545c15afff66fd870c13d81aac1abf4addea87a9
+
+  spectator:
+    git: https://gitlab.com/arctic-fox/spectator.git
+    version: 0.12.4
+
+  sqlite3:
+    git: https://github.com/crystal-lang/crystal-sqlite3.git
+    version: 0.23.0
+
+  tallboy:
+    git: https://github.com/epoch/tallboy.git
+    version: 0.9.3
+
