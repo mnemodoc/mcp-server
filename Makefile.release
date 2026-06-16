@@ -1,0 +1,40 @@
+PROGRAM_NAME = mnemodoc-server
+SOURCE_FILE  = src/$(PROGRAM_NAME).cr
+OUTPUT_FILE  = bin/$(PROGRAM_NAME)-${TARGETOS}-${TARGETARCH}
+COMPILE_OPTS = --threads 4 --release --error-trace --static
+VENDOR       = vendor
+SUBMODULE    = ext/sqlite-vec
+
+# All targets are tasks, not files. `licenses` in particular would otherwise
+# collide with the generated licenses/ directory and be skipped as "up to date".
+.PHONY: debug vec0 deps licenses release
+
+debug:
+	@uname -a
+	@echo "TARGETPLATFORM: ${TARGETPLATFORM}"
+	@echo "TARGETOS: ${TARGETOS}"
+	@echo "TARGETARCH: ${TARGETARCH}"
+	@echo "SOURCE_FILE: $(SOURCE_FILE)"
+	@echo "OUTPUT_FILE: $(OUTPUT_FILE)"
+
+vec0:
+	VERSION="$$(cat $(SUBMODULE)/VERSION)"; \
+	export VERSION; \
+	export VERSION_MAJOR="$$(echo $$VERSION | cut -d. -f1)"; \
+	export VERSION_MINOR="$$(echo $$VERSION | cut -d. -f2)"; \
+	export VERSION_PATCH="$$(echo $$VERSION | cut -d. -f3 | cut -d- -f1)"; \
+	export DATE="$$(date -u +%FT%TZ)"; \
+	export SOURCE="$$(git -C $(SUBMODULE) rev-parse HEAD 2>/dev/null || echo unknown)"; \
+	envsubst < $(SUBMODULE)/sqlite-vec.h.tmpl > $(SUBMODULE)/sqlite-vec.h
+	sed -e '/typedef u_int8_t uint8_t;/d' -e '/typedef u_int16_t uint16_t;/d' -e '/typedef u_int64_t uint64_t;/d' $(SUBMODULE)/sqlite-vec.c > $(VENDOR)/sqlite-vec.patched.c
+	cc -O2 -DSQLITE_CORE -I$(SUBMODULE) -c $(VENDOR)/sqlite-vec.patched.c -o $(VENDOR)/sqlite-vec.o
+	cc -O2 -c $(VENDOR)/vec0_shim.c -o $(VENDOR)/vec0_shim.o
+
+deps: debug
+	shards install --production
+
+licenses:
+	bash scripts/harvest-licenses.sh
+
+release: deps vec0 licenses
+	crystal build $(COMPILE_OPTS) -o $(OUTPUT_FILE) $(SOURCE_FILE)
