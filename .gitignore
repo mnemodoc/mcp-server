@@ -25,3 +25,4 @@
 
 # Assembled at build time from licenses.manifest; baked into the binary
 /licenses/
+/.superpowers/

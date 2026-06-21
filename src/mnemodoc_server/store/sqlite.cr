@@ -127,16 +127,30 @@ module MnemodocServer
 
       # Atomically replaces a file's row and all its chunks under the store write
       # lock. Used by the crawler so every concurrent worker goes through the
-      # same mutex.
+      # same mutex. The files upsert and every chunk write (chunks + chunks_fts +
+      # vec_chunks) commit or roll back together in ONE transaction on ONE
+      # connection, so a crash or exception mid-write can never leave an orphan
+      # files row (which would make file_indexed? wrongly skip re-indexing).
       def index_file(path : String, mtime : Int64, chunks : Array(Chunk)) : Nil
         @write_mutex.synchronize do
           now = Time.utc.to_unix
-          @db.exec(
-            "INSERT INTO files (path, mtime, indexed_at) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, indexed_at = excluded.indexed_at",
-            path, mtime, now
-          )
-          write_chunks_transaction(chunks)
+          @db.transaction do |tx|
+            cnn = tx.connection
+            cnn.exec(
+              "INSERT INTO files (path, mtime, indexed_at) VALUES (?, ?, ?) ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, indexed_at = excluded.indexed_at",
+              path, mtime, now
+            )
+            after_file_upsert(path)
+            write_chunks_into(cnn, chunks)
+          end
         end
+      end
+
+      # Test-only seam: invoked inside the index_file transaction, right after
+      # the files row is upserted and before any chunk is written. The default
+      # is a no-op; specs override it in a subclass to raise here and prove the
+      # whole transaction (files row included) rolls back atomically.
+      protected def after_file_upsert(path : String) : Nil
       end
 
       # Wipes the entire index: all files (cascading their chunks), the vec0
@@ -506,44 +520,54 @@ module MnemodocServer
 
       # Replaces chunks for all affected files in a single transaction.
       # Must be called from within a @write_mutex.synchronize block.
-      # Deletes vec_chunks rows before deleting chunks (vec0 has no FK cascade),
-      # then inserts fresh vec_chunks entries using last_insert_rowid().
+      # Thin wrapper around write_chunks_into so callers that only touch chunks
+      # (save_chunks) keep their own transaction boundary.
       private def write_chunks_transaction(chunks : Array(Chunk)) : Nil
         return if chunks.empty?
         @db.transaction do |tx|
-          cnn = tx.connection
-          files = chunks.map(&.file_path).uniq!
-          files.each do |file_path|
-            cleanup_virtual_indexes(cnn, file_path)
-            cnn.exec("DELETE FROM chunks WHERE file_path = ?", file_path)
-          end
-          chunks.each do |chunk|
-            cnn.exec(
-              "INSERT INTO chunks (file_path, heading, parent_heading, content, embedding, token_count) VALUES (?, ?, ?, ?, ?, ?)",
-              chunk.file_path,
-              chunk.heading,
-              chunk.parent_heading,
-              chunk.content,
-              serialize_embedding(chunk.embedding),
-              chunk.token_count
-            )
-            rowid = cnn.query_one("SELECT last_insert_rowid()", as: Int64)
-            # The FTS index covers every chunk regardless of embedding validity,
-            # so keyword search works even when a vector is missing/malformed.
-            cnn.exec(
-              "INSERT INTO chunks_fts(rowid, content, heading, file_path) VALUES (?, ?, ?, ?)",
-              rowid, chunk.content, chunk.heading, chunk.file_path
-            )
-            # Insert this chunk's embedding into vec_chunks using the same rowid.
-            # Skipped entirely under the qdrant backend (@vec0 == false); otherwise
-            # only inserted when the embedding has the expected 768 dimensions.
-            if @vec0
-              if chunk.embedding.size == 768
-                vec_str = "[#{chunk.embedding.join(",")}]"
-                cnn.exec("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)", rowid, vec_str)
-              else
-                Log.warn { "skipping vec_chunks insert: embedding size #{chunk.embedding.size} != 768 for #{chunk.file_path}" }
-              end
+          write_chunks_into(tx.connection, chunks)
+        end
+      end
+
+      # Writes the given chunks (chunks + chunks_fts + vec_chunks) on the passed
+      # connection WITHOUT opening its own transaction, so the caller controls the
+      # transaction boundary (index_file shares one transaction with the files
+      # upsert; write_chunks_transaction wraps this in a dedicated transaction).
+      # Deletes vec_chunks rows before deleting chunks (vec0 has no FK cascade),
+      # then inserts fresh vec_chunks entries using last_insert_rowid().
+      private def write_chunks_into(cnn : DB::Connection, chunks : Array(Chunk)) : Nil
+        return if chunks.empty?
+        files = chunks.map(&.file_path).uniq!
+        files.each do |file_path|
+          cleanup_virtual_indexes(cnn, file_path)
+          cnn.exec("DELETE FROM chunks WHERE file_path = ?", file_path)
+        end
+        chunks.each do |chunk|
+          cnn.exec(
+            "INSERT INTO chunks (file_path, heading, parent_heading, content, embedding, token_count) VALUES (?, ?, ?, ?, ?, ?)",
+            chunk.file_path,
+            chunk.heading,
+            chunk.parent_heading,
+            chunk.content,
+            serialize_embedding(chunk.embedding),
+            chunk.token_count
+          )
+          rowid = cnn.query_one("SELECT last_insert_rowid()", as: Int64)
+          # The FTS index covers every chunk regardless of embedding validity,
+          # so keyword search works even when a vector is missing/malformed.
+          cnn.exec(
+            "INSERT INTO chunks_fts(rowid, content, heading, file_path) VALUES (?, ?, ?, ?)",
+            rowid, chunk.content, chunk.heading, chunk.file_path
+          )
+          # Insert this chunk's embedding into vec_chunks using the same rowid.
+          # Skipped entirely under the qdrant backend (@vec0 == false); otherwise
+          # only inserted when the embedding has the expected 768 dimensions.
+          if @vec0
+            if chunk.embedding.size == 768
+              vec_str = "[#{chunk.embedding.join(",")}]"
+              cnn.exec("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)", rowid, vec_str)
+            else
+              Log.warn { "skipping vec_chunks insert: embedding size #{chunk.embedding.size} != 768 for #{chunk.file_path}" }
             end
           end
         end

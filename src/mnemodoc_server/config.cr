@@ -27,7 +27,7 @@ module MnemodocServer
     property keyword_weight : Float64 = 0.3
   end
 
-  # Server runtime settings: SSE bind address/port and logging.
+  # Server runtime settings: SSE bind address/port, logging, and daemon mode.
   class ServerConfig
     include YAML::Serializable
 
@@ -38,6 +38,12 @@ module MnemodocServer
     property sse_port : Int32 = 8765
     property log_file : String = "stderr"
     property log_level : String = "info"
+    # When true (default), `serve --stdio` starts a per-project background daemon
+    # and connects via a stdio proxy; set to false to run standalone (no daemon).
+    property? daemon : Bool = true
+    # Seconds of client inactivity after which the daemon self-exits to free
+    # resources. Must be >= 1.
+    property daemon_idle_timeout : Int32 = 600
   end
 
   # Database location. An empty path means "derive from the project" (see
@@ -139,6 +145,8 @@ module MnemodocServer
       env["MNEMODOC_SERVER_SSE_PORT"]?.try { |v| @server.sse_port = v.to_i }
       env["MNEMODOC_SERVER_LOG_FILE"]?.try { |v| @server.log_file = v }
       env["MNEMODOC_SERVER_LOG_LEVEL"]?.try { |v| @server.log_level = v }
+      env["MNEMODOC_SERVER_DAEMON"]?.try { |v| @server.daemon = v.downcase == "true" }
+      env["MNEMODOC_SERVER_IDLE_TIMEOUT"]?.try { |v| v.to_i?.try { |secs| @server.daemon_idle_timeout = secs } }
       env["MNEMODOC_DB_PATH"]?.try { |v| @db.path = v }
       env["MNEMODOC_INDEX_CONCURRENCY"]?.try { |v| @index.concurrency = v.to_i }
       env["MNEMODOC_INDEX_PDF"]?.try { |v| @index.pdf = v == "true" }
@@ -188,6 +196,18 @@ module MnemodocServer
       File.expand_path(@db.path.gsub("~", Path.home.to_s))
     end
 
+    # Path to the Unix domain socket used by the per-project daemon. Lives beside
+    # the index DB so it is scoped to the same project directory.
+    def daemon_socket_path : String
+      File.join(File.dirname(db_path), "daemon.sock")
+    end
+
+    # Path to the lock file that guards singleton daemon startup. Lives beside
+    # the index DB so it is scoped to the same project directory.
+    def daemon_lock_path : String
+      File.join(File.dirname(db_path), "daemon.lock")
+    end
+
     # Default per-project database under ~/.local/share. Keyed by basename AND
     # a short hash of the absolute source directory so two projects named the
     # same on disk get distinct databases.
@@ -217,6 +237,7 @@ module MnemodocServer
       errors << "search.backend must be vec0|qdrant" unless @search.backend.in?("vec0", "qdrant")
       errors << "qdrant.url is required when search.backend is qdrant" if @search.backend == "qdrant" && @qdrant.url.empty?
       errors << "server.sse_port must be 1-65535" unless @server.sse_port.in?(1..65535)
+      errors << "server.daemon_idle_timeout must be >= 1" unless @server.daemon_idle_timeout >= 1
       errors << "index.concurrency must be >= 1" unless @index.concurrency >= 1
       begin
         ::Log::Severity.parse(@server.log_level)

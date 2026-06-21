@@ -60,7 +60,9 @@ The JSON-RPC 2.0 / MCP transport (stdio + HTTP) is **not in this repo**: it live
 src/mnemodoc-server.cr              Entry point: init_app!, CLI.run
 src/mnemodoc_server/
   cli.cr                           Admiral CLI — subcommands: serve, index, search, status, delete, context, info
-  config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs)
+  config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs); daemon_socket_path / daemon_lock_path
+  daemon.cr                        Per-project daemon: owns the SQLite index, spawns background indexing, serves MCP over a UNIX socket, self-exits when idle (future: file watcher)
+  daemon_proxy.cr                  Default `serve --stdio` path when server.daemon is true: auto-spawns the daemon (flock-serialised), forwards JSON-RPC over the UNIX socket, self-heals on daemon death (≤3 attempts), falls back to in-process standalone on exhaustion
   helpers.cr                       version (shard version + git ref, compile-time), format_bytes
   systemd.cr                       systemd sd_notify (READY=1, STOPPING=1, watchdog)
   single_flight.cr                 Concurrent deduplication via Channel + Mutex
@@ -116,6 +118,14 @@ src/mnemodoc_server/
     status.cr                      status MCP tool
     context.cr                     get_project_context MCP tool (delegates to Roles::Selector)
 ```
+
+### Daemon / proxy
+
+**Problem solved:** when multiple MCP clients (Zed, parallel `claude-agent` sessions) each launch `serve --stdio`, each one used to open the same `index.db` and trigger a background re-index at boot — N processes competing on the same SQLite index. Now ONE daemon per project owns the index; every `serve --stdio` invocation is a thin proxy to it. Clients are unchanged.
+
+**Daemon** (`daemon.cr`): launched internally by `serve --daemon`. It opens `Store::SQLite`, starts background indexing in a fiber, then binds `MCP::Http` on a UNIX domain socket at `<project dir>/daemon.sock` (beside the index DB). It wires SIGTERM → graceful stop and SIGUSR1 → log rotation. After `server.daemon_idle_timeout` seconds of inactivity the transport self-exits; the next `serve --stdio` auto-respawns it. Crash-safety rests on SQLite WAL and the per-file atomic indexing convention. **Future extension point:** a file watcher will hook into the daemon to trigger incremental re-indexing when source files change on disk (not implemented yet).
+
+**Proxy** (`daemon_proxy.cr`): the default `serve --stdio` path when `server.daemon` is true. On startup it checks `GET /health` over the socket; if the daemon is not running it acquires an exclusive advisory lock on `<project dir>/daemon.lock`, removes any stale socket, spawns the daemon process fully detached (no shared stdio), and polls `/health` until it answers (up to 30 s). The flock prevents double-spawn when multiple clients start simultaneously. For each stdin line the proxy opens a fresh UNIX connection, POSTs to `/mcp`, and writes the reply to stdout, with up to 32 concurrent requests in flight. On a connection failure it self-heals under the flock (up to 3 attempts total). A replayed `delete_file` whose response is "not found in index" is rewritten to a success — the file was likely already deleted before the daemon died. If healing is exhausted the whole remaining session falls back to a lazily-built in-process standalone handler (which does **not** re-index, to avoid a multi-process indexing storm). A startup failure (daemon never becomes healthy) also falls back to the in-process standalone.
 
 ## MCP tools exposed
 
@@ -179,6 +189,8 @@ server:
   sse_port: 8765
   log_file: stderr    # stderr | stdout | /path/to/file.log
   log_level: info     # trace | debug | info | warn | error | fatal | off
+  daemon: true        # false → serve --stdio runs standalone (no per-project background daemon)
+  daemon_idle_timeout: 600  # seconds of inactivity before the daemon self-exits (>= 1)
 
 db:
   # default: ~/.local/share/mnemodoc-server/<project>-<hash>/index.db
@@ -209,6 +221,8 @@ All settings can be overridden at runtime without editing the YAML file:
 | `MNEMODOC_SERVER_SSE_PORT` | `server.sse_port` |
 | `MNEMODOC_SERVER_LOG_FILE` | `server.log_file` |
 | `MNEMODOC_SERVER_LOG_LEVEL` | `server.log_level` |
+| `MNEMODOC_SERVER_DAEMON` | `server.daemon` |
+| `MNEMODOC_SERVER_IDLE_TIMEOUT` | `server.daemon_idle_timeout` |
 | `MNEMODOC_DB_PATH` | `db.path` |
 | `MNEMODOC_INDEX_CONCURRENCY` | `index.concurrency` |
 | `MNEMODOC_INDEX_PDF` | `index.pdf` |

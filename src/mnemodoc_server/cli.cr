@@ -28,10 +28,11 @@ module MnemodocServer
       define_flag sse : Bool, long: "sse", default: false, description: "Use HTTP/SSE transport"                    # ameba:disable Lint/UselessAssign
       define_flag port : Int32, long: "port", default: 0, description: "SSE port override (0 = use config)"         # ameba:disable Lint/UselessAssign
       define_flag host : String, long: "host", default: "", description: "SSE bind address override (e.g. 0.0.0.0)" # ameba:disable Lint/UselessAssign
+      # Internal flag: run as the per-project daemon serving over the UNIX socket.
+      # Not intended for direct use — launched programmatically by the proxy (lot 5).
+      define_flag daemon : Bool, long: "daemon", default: false, description: "Internal: run as the per-project daemon (UNIX socket)" # ameba:disable Lint/UselessAssign
 
       def run
-        store : Store::SQLite? = nil
-        embedder : Indexer::Embedder? = nil
         MnemodocServer.init_app!(flags.config)
         config = MnemodocServer.config
 
@@ -42,51 +43,26 @@ module MnemodocServer
           config.server.sse_host = flags.host
         end
 
-        Dir.mkdir_p(File.dirname(config.db_path))
-        store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
-        # Non-nil binding so the background fiber captures a typed store
-        active_store = store
-        qi = MnemodocServer.qdrant_index(config)
-
-        built = ToolRegistry.build(config, store, qi)
-        server = built[:server]
-        embedder = built[:embedder]
-
-        # Index configured paths in the background so the server is immediately
-        # responsive; unchanged files are skipped via mtime so restarts are cheap.
-        # Use resolved_paths so relative entries are anchored to the config file's
-        # directory rather than the process working directory.
-        spawn do
-          idx_embedder = Indexer::Embedder.new(config.ollama)
-          registry = Indexer::Format::Registry.new(config)
-          crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
-          if active_store.model_mismatch?(config.ollama.model)
-            Log.warn { "embedding model changed; clearing index for a full re-index" }
-            active_store.clear_index!
-            qi.try(&.clear)
-          end
-          qi.try { |index| MnemodocServer.ensure_qdrant!(index, active_store) }
-          index_result = crawler.run(active_store, idx_embedder, SingleFlight.new, concurrency: config.index.concurrency)
-          active_store.embedding_model = config.ollama.model
-          Log.info { "startup indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
-        rescue ex
-          Log.error { "startup indexing failed: #{ex.message}" }
+        # Daemon mode: own the project index and serve over the UNIX socket.
+        # Checked first so --daemon takes precedence over --stdio/--sse.
+        if flags.daemon
+          MnemodocServer::Daemon.new(config).run
+          return
         end
 
-        # stdio is the default; SSE must be explicitly requested with --sse.
-        if flags.stdio || !flags.sse
-          transport = MCP::Stdio.new(server)
+        # SSE must be explicitly requested with --sse.
+        if !flags.stdio && flags.sse
+          MnemodocServer.serve_sse(config)
+        elsif config.server.daemon?
+          # Default stdio path: proxy to (or auto-spawn) the per-project daemon.
+          MnemodocServer::DaemonProxy.new(config, flags.config).run
         else
-          transport = MCP::Http.new(server, host: config.server.sse_host, port: config.server.sse_port)
+          # Daemon disabled: serve stdio standalone in this process.
+          MnemodocServer.serve_stdio(config)
         end
-        transport.on_ready { SystemD.ready }
-        transport.on_stopping { SystemD.stopping }
-        Signal::TERM.trap { transport.stop }
-        Signal::USR1.trap { MnemodocServer.reopen_log_file! }
-        transport.start
+      rescue ex : Indexer::EmbedderError
+        handle_error(ex)
       ensure
-        embedder.try(&.close)
-        store.try(&.close)
         MnemodocServer.close_log_file!
       end
     end

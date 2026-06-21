@@ -31,6 +31,8 @@ server:
   sse_port: 8765
   log_file: stderr    # stderr | stdout | /path/to/file.log
   log_level: info     # trace | debug | info | warn | error | fatal | off
+  daemon: true        # false → serve --stdio runs standalone (no per-project background daemon)
+  daemon_idle_timeout: 600  # seconds of inactivity before the daemon self-exits (>= 1)
 
 db:
   # default: ~/.local/share/mnemodoc-server/<basename>-<hash>/index.db

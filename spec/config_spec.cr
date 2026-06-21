@@ -15,6 +15,8 @@ Spectator.describe MnemodocServer::Config do
       expect(config.server.sse_port).to eq(8765)
       expect(config.server.log_file).to eq("stderr")
       expect(config.server.log_level).to eq("info")
+      expect(config.server.daemon?).to be_true
+      expect(config.server.daemon_idle_timeout).to eq(600)
       expect(config.db.path).to eq("")
       expect(config.db_path).to contain(Path.home.to_s)
       expect(config.db_path).to contain("mnemodoc-server")
@@ -26,6 +28,12 @@ Spectator.describe MnemodocServer::Config do
       expect(config.search.top_k).to eq(10)
       expect(config.search.mode).to eq("semantic")
       expect(config.search.recency_days).to eq(7)
+    end
+
+    it "parses daemon toggle and idle timeout from YAML" do
+      config = MnemodocServer::Config.from_yaml("server:\n  daemon: false\n  daemon_idle_timeout: 120")
+      expect(config.server.daemon?).to be_false
+      expect(config.server.daemon_idle_timeout).to eq(120)
     end
   end
 
@@ -64,6 +72,13 @@ Spectator.describe MnemodocServer::Config do
       config = MnemodocServer::Config.from_yaml("")
       config.apply_env!({"MNEMODOC_SEARCH_KEYWORD_WEIGHT" => "0.5"})
       expect(config.search.keyword_weight).to eq(0.5)
+    end
+
+    it "overrides daemon and idle timeout via env" do
+      config = MnemodocServer::Config.from_yaml("")
+      config.apply_env!({"MNEMODOC_SERVER_DAEMON" => "false", "MNEMODOC_SERVER_IDLE_TIMEOUT" => "30"})
+      expect(config.server.daemon?).to be_false
+      expect(config.server.daemon_idle_timeout).to eq(30)
     end
   end
 
@@ -166,6 +181,18 @@ Spectator.describe MnemodocServer::Config do
     end
   end
 
+  describe "#daemon_socket_path and #daemon_lock_path" do
+    it "places daemon.sock beside the index DB" do
+      config = MnemodocServer::Config.from_yaml("db:\n  path: /tmp/x/index.db")
+      expect(config.daemon_socket_path).to eq("/tmp/x/daemon.sock")
+    end
+
+    it "places daemon.lock beside the index DB" do
+      config = MnemodocServer::Config.from_yaml("db:\n  path: /tmp/x/index.db")
+      expect(config.daemon_lock_path).to eq("/tmp/x/daemon.lock")
+    end
+  end
+
   describe "#log_file_path" do
     it "keeps stream keywords as-is" do
       config = MnemodocServer::Config.from_yaml("server:\n  log_file: stderr")
@@ -265,6 +292,11 @@ Spectator.describe MnemodocServer::Config do
     it "raises when index.concurrency is less than 1" do
       config = MnemodocServer::Config.from_yaml("index:\n  concurrency: 0")
       expect { config.validate! }.to raise_error(ArgumentError, /concurrency/)
+    end
+
+    it "raises when daemon_idle_timeout is less than 1" do
+      config = MnemodocServer::Config.from_yaml("server:\n  daemon_idle_timeout: 0")
+      expect { config.validate! }.to raise_error(ArgumentError, /daemon_idle_timeout/)
     end
 
     it "raises on an unknown search.backend" do

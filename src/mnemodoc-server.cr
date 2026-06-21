@@ -125,6 +125,77 @@ module MnemodocServer
     Log.info { "qdrant backfill complete" }
   end
 
+  # Indexes the configured paths synchronously: builds its own embedder,
+  # format registry and crawler, clears the index on an embedding-model change,
+  # ensures/backfills Qdrant when enabled, runs the crawl, records the model and
+  # logs a one-line summary. Does NOT spawn — the caller decides whether to run
+  # this in the background. A failing index is logged and swallowed so it never
+  # takes the server down.
+  def self.background_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?) : Nil
+    idx_embedder = Indexer::Embedder.new(config.ollama)
+    registry = Indexer::Format::Registry.new(config)
+    crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
+    if store.model_mismatch?(config.ollama.model)
+      Log.warn { "embedding model changed; clearing index for a full re-index" }
+      store.clear_index!
+      qi.try(&.clear)
+    end
+    qi.try { |index| ensure_qdrant!(index, store) }
+    index_result = crawler.run(store, idx_embedder, SingleFlight.new, concurrency: config.index.concurrency)
+    store.embedding_model = config.ollama.model
+    Log.info { "startup indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
+  rescue ex
+    Log.error { "startup indexing failed: #{ex.message}" }
+  end
+
+  # Runs the standalone stdio MCP server: opens the store, spawns background
+  # indexing, and serves over stdio until shutdown. Does not close the log file
+  # (the CLI entry point owns the log-file lifecycle).
+  def self.serve_stdio(config : Config) : Nil
+    run_transport(config) { |server| MCP::Stdio.new(server) }
+  end
+
+  # Runs the standalone HTTP/SSE MCP server, binding to the configured host/port.
+  # Any --host/--port overrides are applied to the config by the caller before
+  # this is invoked. Does not close the log file (the CLI entry point owns it).
+  def self.serve_sse(config : Config) : Nil
+    run_transport(config) { |server| MCP::Http.new(server, host: config.server.sse_host, port: config.server.sse_port) }
+  end
+
+  # Shared body for serve_stdio/serve_sse: opens the store, builds the tool
+  # registry, spawns background indexing, then builds the transport from the
+  # given block, wires SystemD readiness/stopping callbacks and the TERM/USR1
+  # signal traps, and runs it. Closes the embedder and store on exit; the log
+  # file is left open for the CLI entry point's ensure block.
+  private def self.run_transport(config : Config, &) : Nil
+    store : Store::SQLite? = nil        # ameba:disable Lint/UselessAssign
+    embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
+
+    Dir.mkdir_p(File.dirname(config.db_path))
+    store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
+    # Non-nil binding so the background fiber captures a typed store.
+    active_store = store
+    qi = qdrant_index(config)
+
+    built = ToolRegistry.build(config, store, qi)
+    server = built[:server]
+    embedder = built[:embedder]
+
+    # Index configured paths in the background so the server is immediately
+    # responsive; unchanged files are skipped via mtime so restarts are cheap.
+    spawn { background_index(config, active_store, qi) }
+
+    transport = yield server
+    transport.on_ready { SystemD.ready }
+    transport.on_stopping { SystemD.stopping }
+    Signal::TERM.trap { transport.stop }
+    Signal::USR1.trap { reopen_log_file! }
+    transport.start
+  ensure
+    embedder.try(&.close)
+    store.try(&.close)
+  end
+
   private def self.default_config : Config
     Config.from_yaml("")
   end

@@ -1,6 +1,18 @@
 require "./spec_helper"
 require "file_utils"
 
+# Test-only subclass that raises through the after_file_upsert seam, i.e. inside
+# the index_file transaction right after the files row is written. Used to prove
+# index_file rolls the files row back atomically when the write phase fails.
+private class RaisingStore < MnemodocServer::Store::SQLite
+  class Boom < Exception
+  end
+
+  protected def after_file_upsert(path : String) : Nil
+    raise Boom.new("forced failure after files upsert")
+  end
+end
+
 Spectator.describe MnemodocServer::Store::SQLite do
   let(tmp_db) { "/tmp/mnemodoc-test-#{Random::Secure.hex(4)}.db" }
   subject(store) { MnemodocServer::Store::SQLite.new(tmp_db) }
@@ -314,6 +326,36 @@ Spectator.describe MnemodocServer::Store::SQLite do
       expect(store.chunks_for_files(["doc/e.md"]).size).to eq(1)
       store.delete_file("doc/e.md")
       expect(store.chunks_for_files(["doc/e.md"])).to be_empty
+    end
+
+    # Proves the files upsert and the chunk writes share ONE transaction: when
+    # the write phase raises after the files row is inserted, the files row must
+    # roll back too. Without atomicity an orphan row carrying the file's mtime
+    # would make file_indexed? wrongly report the file as up-to-date and
+    # silently skip re-indexing it forever. The raise is injected through the
+    # after_file_upsert test seam, which fires inside the transaction right
+    # after the files row is written and before any chunk is, so the failure
+    # lands exactly in the formerly non-atomic window. A non-atomic index_file
+    # (bare files insert + separate chunk transaction) would leave the row
+    # behind and fail these expectations.
+    it "rolls back the files row when the write phase fails (atomicity)" do
+      raising_store = RaisingStore.new(tmp_db)
+      embedding = Array(Float32).new(4, 0.3_f32)
+      chunks = [MnemodocServer::Chunk.new(file_path: "doc/atomic.md", heading: nil, parent_heading: nil, content: "orphan", embedding: embedding, token_count: 1, mtime: 1000_i64)]
+
+      expect { raising_store.index_file("doc/atomic.md", 1000_i64, chunks) }.to raise_error(RaisingStore::Boom)
+
+      # The whole transaction (files upsert included) must have rolled back, so a
+      # fresh store reading the same database sees no trace of the file.
+      verifier = MnemodocServer::Store::SQLite.new(tmp_db)
+      begin
+        expect(verifier.file_indexed?("doc/atomic.md", mtime: 1000_i64)).to be_false
+        expect(verifier.exists?("doc/atomic.md")).to be_false
+        expect(verifier.list_files.map(&.path)).not_to contain("doc/atomic.md")
+      ensure
+        verifier.close
+      end
+      raising_store.close
     end
   end
 
