@@ -4,6 +4,8 @@ module MnemodocServer
     # files, task, and query. Selection logic lives in Roles::Selector; this
     # tool parses the args, formats the ToolResult, and maps failures to errors.
     class Context
+      Log = ::Log.for("mnemodoc-server.tools.context")
+
       def initialize(@selector : Roles::Selector)
       end
 
@@ -17,6 +19,10 @@ module MnemodocServer
         query = a.string?("query") || ""
 
         selection = @selector.select(files, task, query)
+
+        # Audit trail for role injection, mirroring the `context` CLI command so
+        # both channels leave the same trace in server.log_file.
+        Log.info { "selected role=#{selection.role.name} reason=#{selection.reason.inspect} (via MCP tool)" }
 
         candidates_data = selection.candidates.map do |candidate|
           JSON::Any.new({

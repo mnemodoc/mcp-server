@@ -16,12 +16,17 @@ Spectator.describe "context CLI command" do
   before_each { Dir.mkdir_p(tmp_dir) }
   after_each { FileUtils.rm_rf(tmp_dir) }
 
+  let(log_path) { File.join(tmp_dir, "context.log") }
+
   # Writes a config whose context section declares two file-glob roles and no
   # default, then drops their markdown files next to it so role paths resolve.
+  # The server.log_file points to log_path so tests can assert on audit output.
   private def write_fixture
     File.write(File.join(tmp_dir, "crystal.md"), "# Crystal role\nUse idiomatic Crystal.")
     File.write(File.join(tmp_dir, "rails.md"), "# Rails role\nFollow Rails conventions.")
     File.write(config_path, <<-YAML)
+    server:
+      log_file: #{log_path}
     context:
       roles:
         - file: crystal.md
@@ -47,6 +52,15 @@ Spectator.describe "context CLI command" do
     expect(result[:code]).to eq(0)
     expect(result[:out]).to contain("Crystal role")
     expect(result[:out]).not_to contain("Rails role")
+  end
+
+  it "writes an audit line with role name and reason to the log file" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    run_context(["--config", config_path, "--files", "src/foo.cr"])
+    log_content = File.read(log_path)
+    expect(log_content).to contain("mnemodoc-server.context")
+    expect(log_content).to contain("role=crystal")
   end
 
   it "writes an error to stderr and exits non-zero when there is no signal" do

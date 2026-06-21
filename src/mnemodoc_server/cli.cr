@@ -122,6 +122,8 @@ module MnemodocServer
         qi.try { |index| MnemodocServer.ensure_qdrant!(index, store) }
         index_result = crawler.run(store, embedder, sf, concurrency: config.index.concurrency)
         store.embedding_model = config.ollama.model
+        # Summary audit line, parity with the Serve background-indexing path.
+        Log.info { "indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
         puts "Indexed: #{index_result[:indexed]} files, skipped: #{index_result[:skipped]} (up to date), pruned: #{index_result[:pruned]}"
       rescue ex : Indexer::EmbedderError
         handle_error(ex)
@@ -155,6 +157,8 @@ module MnemodocServer
         query_vec = embedder.embed_batch([arguments.query]).first
         hybrid = MnemodocServer::Search::Hybrid.new(config.search, MnemodocServer.qdrant_index(config))
         results = hybrid.search(arguments.query, query_vec, store)
+        # Diagnostic trace for tuning relevance; off at the default info level.
+        Log.debug { "query=#{arguments.query.inspect} mode=#{flags.mode} top_k=#{flags.top} → #{results.size} results" }
 
         table = Tallboy.table do
           columns(header: true) do
@@ -214,9 +218,15 @@ module MnemodocServer
         store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
         resolved = store.indexed_path_for(arguments.path)
         if resolved.nil?
+          # Distinct from the success path: a no-op, never a misleading "deleted" INFO.
+          Log.debug { "delete skipped: '#{arguments.path}' not found in index" }
           puts "Not found in index: #{arguments.path}"
         else
+          # Chunk count captured before deletion (CASCADE wipes the rows) so the
+          # audit line mirrors the crawler's and the MCP delete tool's style.
+          chunk_count = store.chunk_ids_for_file(resolved).size
           store.delete_file(resolved)
+          Log.info { "deleted #{resolved} (#{chunk_count} chunks, manual removal via CLI)" }
           puts "Deleted: #{resolved}"
         end
       ensure
@@ -246,6 +256,13 @@ module MnemodocServer
         embedder = Indexer::Embedder.new(config.ollama)
         selector = Roles::Selector.from_config(config, embedder)
         selection = selector.select(flags.files.to_a, flags.task, flags.query)
+        # Audit trail for role injection, written to server.log_file (never stdout,
+        # which the PreToolUse hook consumes as the role markdown).
+        Log.for("mnemodoc-server.context").info {
+          "role=#{selection.role.name} reason=#{selection.reason.inspect}" \
+          " files=#{flags.files.to_a.inspect} task=#{flags.task.inspect}" \
+          " query=#{flags.query.inspect}"
+        }
         # The role markdown goes to stdout verbatim so the hook injects it as-is.
         puts selection.role.content
       rescue ex : Roles::NoRolesError | Roles::NeedSignalError | File::Error | Indexer::EmbedderError

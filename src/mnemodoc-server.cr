@@ -116,8 +116,13 @@ module MnemodocServer
   # (best-effort; mirrors the vec0 startup backfill). Dim 768 = nomic-embed-text.
   def self.ensure_qdrant!(index : Store::QdrantIndex, store : Store::SQLite) : Nil
     index.ensure(768)
-    return unless (index.count || 0_i64) < store.chunk_count
+    chunk_count = store.chunk_count
+    return unless (index.count || 0_i64) < chunk_count
+    # Mirrors the vec0 backfill's INFO bracketing so a bulk Qdrant rebuild is
+    # visible in the log rather than happening silently.
+    Log.info { "backfilling qdrant from #{chunk_count} stored embeddings" }
     store.stored_embeddings.each_slice(256) { |batch| index.upsert(batch) }
+    Log.info { "qdrant backfill complete" }
   end
 
   private def self.default_config : Config

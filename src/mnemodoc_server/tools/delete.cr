@@ -4,6 +4,8 @@ module MnemodocServer
     # Validates that the file is currently indexed before attempting deletion,
     # returning an error when the path is not found.
     class Delete
+      Log = ::Log.for("mnemodoc-server.tools.delete")
+
       def initialize(@store : Store::SQLite)
       end
 
@@ -17,10 +19,19 @@ module MnemodocServer
         path = MCP::Arguments.new(args).require_string("path")
 
         resolved = @store.indexed_path_for(path)
-        raise MCP::ToolError.new("file not found in index: #{path}") if resolved.nil?
+        if resolved.nil?
+          # Distinct from the success path: a no-op, never a misleading "deleted" INFO.
+          Log.debug { "delete skipped: '#{path}' not found in index" }
+          raise MCP::ToolError.new("file not found in index: #{path}")
+        end
 
+        # Captured before deletion (CASCADE wipes the chunk rows) so the audit line
+        # can report how many chunks were removed, mirroring the crawler's style.
+        chunk_count = @store.chunk_ids_for_file(resolved).size
         deleted = @store.delete_file(resolved)
         raise MCP::ToolError.new("delete returned 0 rows for: #{resolved}") if deleted == 0
+
+        Log.info { "deleted #{resolved} (#{chunk_count} chunks, manual removal via MCP tool)" }
 
         MCP::ToolResult.new(
           structured_content: JSON::Any.new({"deleted" => JSON::Any.new(resolved)} of String => JSON::Any),

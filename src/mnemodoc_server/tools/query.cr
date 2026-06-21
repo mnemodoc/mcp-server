@@ -39,6 +39,9 @@ module MnemodocServer
         results = Search::Hybrid.new(effective_config, @qdrant_index).search(query, query_vec.as(Array(Float32)), @store)
         elapsed_ms = (Time.monotonic - started_at).total_milliseconds.to_i
 
+        # Diagnostic trace for tuning relevance; off at the default info level.
+        Log.debug { "query=#{query.inspect} mode=#{mode} top_k=#{top_k} → #{results.size} results in #{elapsed_ms}ms" }
+
         chunks_data = results.first(top_k).map do |result|
           JSON::Any.new({
             "file"           => JSON::Any.new(result.chunk.file_path),
