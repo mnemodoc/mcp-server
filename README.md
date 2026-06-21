@@ -316,6 +316,13 @@ sys.exit(0)
 
 The CLI prints the selected role's Markdown to stdout and exits 0; on any failure (no roles, no signal, missing role file, Ollama down) it writes a short message to stderr and exits non-zero, so callers can degrade cleanly.
 
+### Full setup examples
+
+[`examples/`](examples/) has copy-paste setup guides on two axes: per **AI client**
+(Claude Code, GitHub Copilot, Cursor, Windsurf, Zed — including a capability matrix of
+which layers each one supports) and per **framework** (Rails, Laravel, Symfony, Django
+— the `.mnemodoc.yml` role map). Pick one of each. Start at [`examples/README.md`](examples/README.md).
+
 ## Deployment
 
 ### systemd
