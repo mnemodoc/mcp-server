@@ -15,6 +15,7 @@ require "tallboy"
 Crystal::Env.default("development")
 
 require "mcp"
+require "file_watcher"
 
 require "./mnemodoc_server/helpers"
 require "./mnemodoc_server/advisories"
@@ -146,6 +147,62 @@ module MnemodocServer
     Log.info { "startup indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
   rescue ex
     Log.error { "startup indexing failed: #{ex.message}" }
+  end
+
+  # Handles one file-watch event: re-indexes a single supported file (added or
+  # changed) through the crawler, or removes a deleted file from the store and
+  # Qdrant. Unsupported extensions are skipped here because a single-file crawler
+  # root is treated as explicit and would otherwise fall back to plain text.
+  # Wrapped by the caller so one bad event never breaks the watch loop.
+  def self.handle_watch_event(event : FileWatcher::Event, config : Config, store : Store::SQLite,
+                              qi : Store::QdrantIndex?, registry : Indexer::Format::Registry,
+                              embedder : Indexer::Embedder, sf : SingleFlight) : Nil
+    path = event.path
+    if event.type.deleted?
+      ids = store.chunk_ids_for_file(path)
+      store.delete_file(path)
+      qi.try(&.delete(ids)) unless ids.empty?
+      Log.info { "watch: removed #{path}" }
+      return
+    end
+    return unless registry.supported?(File.extname(path))
+    Indexer::Crawler.new([path], registry, config.exclude, qdrant_index: qi)
+      .run(store, embedder, sf, concurrency: 1)
+    Log.info { "watch: re-indexed #{path}" }
+  end
+
+  # Live-watches the configured paths and re-indexes on change while the daemon
+  # runs. Builds its own embedder/registry/single-flight (long-lived fiber), then
+  # runs FileWatcher in a supervised loop: the shard's poll loop can raise on a
+  # stat race during atomic editor saves, so a crash is logged and the watch is
+  # restarted after a short backoff. Each event is isolated so a bad one never
+  # breaks the loop.
+  def self.watch_and_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?) : Nil
+    # Typed as the union the file_watcher shard expects (Enumerable(String | Path)).
+    patterns = [] of String | Path
+    config.resolved_paths.each do |entry|
+      patterns << (File.directory?(entry) ? File.join(entry, "**", "*") : entry)
+    end
+    return if patterns.empty?
+    registry = Indexer::Format::Registry.new(config)
+    embedder = Indexer::Embedder.new(config.ollama)
+    sf = SingleFlight.new
+    interval = config.server.daemon_watch_interval.seconds
+    Log.info { "watch: live re-index over #{patterns.size} path(s), every #{config.server.daemon_watch_interval}s" }
+    loop do
+      begin
+        FileWatcher.watch(patterns, interval: interval) do |event|
+          begin
+            handle_watch_event(event, config, store, qi, registry, embedder, sf)
+          rescue ex
+            Log.error { "watch: failed handling #{event.path}: #{ex.message}" }
+          end
+        end
+      rescue ex
+        Log.error { "watch loop crashed, restarting: #{ex.message}" }
+        sleep 1.second
+      end
+    end
   end
 
   # Runs the standalone stdio MCP server: opens the store, spawns background

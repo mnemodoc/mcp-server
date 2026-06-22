@@ -24,6 +24,10 @@ shards:
     git: https://github.com/crystal-lang/crystal-db.git
     version: 0.14.0
 
+  file_watcher:
+    git: https://github.com/stephannv/file_watcher.git
+    version: 0.1.0+git.commit.b3ab345b1e422eb62ee4cd68bba38d0df1dcc02a
+
   http-client-digest_auth:
     git: https://github.com/mamantoha/http-client-digest_auth.git
     version: 0.6.0

@@ -34,6 +34,8 @@ dependencies:
   qdrant-client:
     github: jbox-web/qdrant-client.cr
     branch: master   # switch to `version: ~> 0.1` once a tag is pushed
+  file_watcher:
+    github: stephannv/file_watcher   # pure-Crystal polling watcher (live re-index in the daemon)
 
 development_dependencies:
   ameba:

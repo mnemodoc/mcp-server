@@ -65,6 +65,12 @@ module MnemodocServer
       # responsive; unchanged files are skipped via mtime so restarts are cheap.
       spawn { MnemodocServer.background_index(@config, active_store, qi) }
 
+      # Live re-index: watch the configured paths and pick up changes while the
+      # daemon runs. Dies with the process on shutdown (holds no external resource).
+      if @config.server.daemon_watch?
+        spawn { MnemodocServer.watch_and_index(@config, active_store, qi) }
+      end
+
       t = MCP::Http.new(
         server,
         socket_path: @config.daemon_socket_path,

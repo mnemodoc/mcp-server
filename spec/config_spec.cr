@@ -37,6 +37,32 @@ Spectator.describe MnemodocServer::Config do
     end
   end
 
+  describe "daemon watch config" do
+    it "defaults daemon_watch on and interval to 1s" do
+      config = MnemodocServer::Config.from_yaml("")
+      expect(config.server.daemon_watch?).to be_true
+      expect(config.server.daemon_watch_interval).to eq(1)
+    end
+
+    it "parses daemon_watch and interval from YAML" do
+      config = MnemodocServer::Config.from_yaml("server:\n  daemon_watch: false\n  daemon_watch_interval: 5")
+      expect(config.server.daemon_watch?).to be_false
+      expect(config.server.daemon_watch_interval).to eq(5)
+    end
+
+    it "overrides daemon watch from env vars" do
+      config = MnemodocServer::Config.from_yaml("")
+      config.apply_env!({"MNEMODOC_SERVER_DAEMON_WATCH" => "false", "MNEMODOC_SERVER_WATCH_INTERVAL" => "3"})
+      expect(config.server.daemon_watch?).to be_false
+      expect(config.server.daemon_watch_interval).to eq(3)
+    end
+
+    it "rejects a watch interval below 1" do
+      config = MnemodocServer::Config.from_yaml("server:\n  daemon_watch_interval: 0")
+      expect { config.validate! }.to raise_error(ArgumentError, /daemon_watch_interval/)
+    end
+  end
+
   describe "#apply_env!" do
     it "overrides ollama host via env" do
       config = MnemodocServer::Config.from_yaml("")

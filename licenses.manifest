@@ -12,6 +12,7 @@ shard   | qdrant-api        | lib/qdrant-api/LICENSE
 shard   | crest             | lib/crest/LICENSE
 shard   | http-client-digest_auth | lib/http-client-digest_auth/LICENSE
 shard   | http_proxy        | lib/http_proxy/LICENSE
+shard   | file_watcher      | lib/file_watcher/LICENSE
 shard   | sqlite-vec        | ext/sqlite-vec/LICENSE-MIT
 clib    | openssl           | Apache-2.0
 clib    | pcre2             | BSD-3-Clause

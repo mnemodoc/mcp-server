@@ -61,7 +61,7 @@ src/mnemodoc-server.cr              Entry point: init_app!, CLI.run
 src/mnemodoc_server/
   cli.cr                           Admiral CLI — subcommands: serve, index, search, status, delete, context, info
   config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs); daemon_socket_path / daemon_lock_path
-  daemon.cr                        Per-project daemon: owns the SQLite index, spawns background indexing, serves MCP over a UNIX socket, self-exits when idle (future: file watcher)
+  daemon.cr                        Per-project daemon: owns the SQLite index, spawns background indexing + a live file-watch (watch_and_index), serves MCP over a UNIX socket, self-exits when idle
   daemon_proxy.cr                  Default `serve --stdio` path when server.daemon is true: auto-spawns the daemon (flock-serialised), forwards JSON-RPC over the UNIX socket, self-heals on daemon death (≤3 attempts), falls back to in-process standalone on exhaustion
   helpers.cr                       version (shard version + git ref, compile-time), format_bytes
   systemd.cr                       systemd sd_notify (READY=1, STOPPING=1, watchdog)
@@ -123,7 +123,7 @@ src/mnemodoc_server/
 
 **Problem solved:** when multiple MCP clients (Zed, parallel `claude-agent` sessions) each launch `serve --stdio`, each one used to open the same `index.db` and trigger a background re-index at boot — N processes competing on the same SQLite index. Now ONE daemon per project owns the index; every `serve --stdio` invocation is a thin proxy to it. Clients are unchanged.
 
-**Daemon** (`daemon.cr`): launched internally by `serve --daemon`. It opens `Store::SQLite`, starts background indexing in a fiber, then binds `MCP::Http` on a UNIX domain socket at `<project dir>/daemon.sock` (beside the index DB). It wires SIGTERM → graceful stop and SIGUSR1 → log rotation. After `server.daemon_idle_timeout` seconds of inactivity the transport self-exits; the next `serve --stdio` auto-respawns it. Crash-safety rests on SQLite WAL and the per-file atomic indexing convention. **Future extension point:** a file watcher will hook into the daemon to trigger incremental re-indexing when source files change on disk (not implemented yet).
+**Daemon** (`daemon.cr`): launched internally by `serve --daemon`. It opens `Store::SQLite`, starts background indexing in a fiber, then binds `MCP::Http` on a UNIX domain socket at `<project dir>/daemon.sock` (beside the index DB). It wires SIGTERM → graceful stop and SIGUSR1 → log rotation. After `server.daemon_idle_timeout` seconds of inactivity the transport self-exits; the next `serve --stdio` auto-respawns it. Crash-safety rests on SQLite WAL and the per-file atomic indexing convention. **Live re-indexing:** when `server.daemon_watch` is set (default), the daemon also spawns `MnemodocServer.watch_and_index` — a supervised fiber that polls the configured paths (via the `file_watcher` shard, `server.daemon_watch_interval` seconds) and re-indexes a single file on add/change (through the crawler) or removes it on delete. Only the daemon watches; the standalone stdio path does not.
 
 **Proxy** (`daemon_proxy.cr`): the default `serve --stdio` path when `server.daemon` is true. On startup it checks `GET /health` over the socket; if the daemon is not running it acquires an exclusive advisory lock on `<project dir>/daemon.lock`, removes any stale socket, spawns the daemon process fully detached (no shared stdio), and polls `/health` until it answers (up to 30 s). The flock prevents double-spawn when multiple clients start simultaneously. For each stdin line the proxy opens a fresh UNIX connection, POSTs to `/mcp`, and writes the reply to stdout, with up to 32 concurrent requests in flight. On a connection failure it self-heals under the flock (up to 3 attempts total). A replayed `delete_file` whose response is "not found in index" is rewritten to a success — the file was likely already deleted before the daemon died. If healing is exhausted the whole remaining session falls back to a lazily-built in-process standalone handler (which does **not** re-index, to avoid a multi-process indexing storm). A startup failure (daemon never becomes healthy) also falls back to the in-process standalone.
 
@@ -195,6 +195,8 @@ server:
   log_level: info     # trace | debug | info | warn | error | fatal | off
   daemon: true        # false → serve --stdio runs standalone (no per-project background daemon)
   daemon_idle_timeout: 600  # seconds of inactivity before the daemon self-exits (>= 1)
+  daemon_watch: true        # live re-index changed files while the daemon runs (polling)
+  daemon_watch_interval: 1  # poll interval in seconds (>= 1)
 
 db:
   # default: ~/.local/share/mnemodoc-server/<project>-<hash>/index.db
@@ -227,6 +229,8 @@ All settings can be overridden at runtime without editing the YAML file:
 | `MNEMODOC_SERVER_LOG_LEVEL` | `server.log_level` |
 | `MNEMODOC_SERVER_DAEMON` | `server.daemon` |
 | `MNEMODOC_SERVER_IDLE_TIMEOUT` | `server.daemon_idle_timeout` |
+| `MNEMODOC_SERVER_DAEMON_WATCH` | `server.daemon_watch` |
+| `MNEMODOC_SERVER_WATCH_INTERVAL` | `server.daemon_watch_interval` |
 | `MNEMODOC_DB_PATH` | `db.path` |
 | `MNEMODOC_INDEX_CONCURRENCY` | `index.concurrency` |
 | `MNEMODOC_INDEX_PDF` | `index.pdf` |

@@ -44,6 +44,11 @@ module MnemodocServer
     # Seconds of client inactivity after which the daemon self-exits to free
     # resources. Must be >= 1.
     property daemon_idle_timeout : Int32 = 600
+    # Watch the configured paths and re-index changed files live while the
+    # daemon runs (polling). Set false to keep the boot-time index only.
+    property? daemon_watch : Bool = true
+    # Poll interval (seconds) for the live file-watch. Must be >= 1.
+    property daemon_watch_interval : Int32 = 1
   end
 
   # Database location. An empty path means "derive from the project" (see
@@ -165,6 +170,8 @@ module MnemodocServer
       env["MNEMODOC_SERVER_LOG_LEVEL"]?.try { |v| @server.log_level = v }
       env["MNEMODOC_SERVER_DAEMON"]?.try { |v| @server.daemon = v.downcase == "true" }
       env["MNEMODOC_SERVER_IDLE_TIMEOUT"]?.try { |v| v.to_i?.try { |secs| @server.daemon_idle_timeout = secs } }
+      env["MNEMODOC_SERVER_DAEMON_WATCH"]?.try { |v| @server.daemon_watch = v.downcase == "true" }
+      env["MNEMODOC_SERVER_WATCH_INTERVAL"]?.try { |v| v.to_i?.try { |secs| @server.daemon_watch_interval = secs } }
       env["MNEMODOC_DB_PATH"]?.try { |v| @db.path = v }
       env["MNEMODOC_INDEX_CONCURRENCY"]?.try { |v| @index.concurrency = v.to_i }
       env["MNEMODOC_INDEX_PDF"]?.try { |v| @index.pdf = v == "true" }
@@ -258,6 +265,7 @@ module MnemodocServer
       errors << "qdrant.url is required when search.backend is qdrant" if @search.backend == "qdrant" && @qdrant.url.empty?
       errors << "server.sse_port must be 1-65535" unless @server.sse_port.in?(1..65535)
       errors << "server.daemon_idle_timeout must be >= 1" unless @server.daemon_idle_timeout >= 1
+      errors << "server.daemon_watch_interval must be >= 1" unless @server.daemon_watch_interval >= 1
       errors << "index.concurrency must be >= 1" unless @index.concurrency >= 1
       begin
         ::Log::Severity.parse(@server.log_level)

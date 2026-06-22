@@ -33,6 +33,8 @@ server:
   log_level: info     # trace | debug | info | warn | error | fatal | off
   daemon: true        # false → serve --stdio runs standalone (no per-project background daemon)
   daemon_idle_timeout: 600  # seconds of inactivity before the daemon self-exits (>= 1)
+  daemon_watch: true        # live re-index changed files while the daemon runs (polling)
+  daemon_watch_interval: 1  # poll interval in seconds (>= 1)
 
 db:
   # default: ~/.local/share/mnemodoc-server/<basename>-<hash>/index.db
