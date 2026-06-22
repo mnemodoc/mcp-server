@@ -118,4 +118,31 @@ Spectator.describe MnemodocServer::Roles::Selector do
         .to raise_error(MnemodocServer::Roles::NeedSignalError)
     end
   end
+
+  # The PreToolUse hook feeds absolute file paths (tool_input.file_path), while
+  # when_files globs are relative to the config directory. Anchoring the globs at
+  # base_dir lets absolute paths match.
+  it "matches an absolute file path against globs anchored at base_dir" do
+    default = role("generalist")
+    roles = [role("trailblazer", when_files: ["app/concepts/**"])]
+    selector = MnemodocServer::Roles::Selector.new(roles, default, nil, base_dir: "/repo")
+    selection = selector.select(["/repo/app/concepts/camping/operation/create.rb"], "", "")
+    expect(selection.role.name).to eq("trailblazer")
+  end
+
+  it "still matches a relative file path against the original globs (non-regression)" do
+    default = role("generalist")
+    roles = [role("trailblazer", when_files: ["app/concepts/**"])]
+    selector = MnemodocServer::Roles::Selector.new(roles, default, nil, base_dir: "/repo")
+    selection = selector.select(["app/concepts/camping/operation/create.rb"], "", "")
+    expect(selection.role.name).to eq("trailblazer")
+  end
+
+  it "ignores an absolute file path outside base_dir and falls back to the default" do
+    default = role("generalist")
+    roles = [role("trailblazer", when_files: ["app/concepts/**"])]
+    selector = MnemodocServer::Roles::Selector.new(roles, default, nil, base_dir: "/repo")
+    selection = selector.select(["/tmp/foo.rb"], "", "")
+    expect(selection.role.name).to eq("generalist")
+  end
 end

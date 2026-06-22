@@ -41,7 +41,11 @@ module MnemodocServer
       # trusted on its own; semantics arbitrate among the contenders.
       WEAK_THRESHOLD = 3
 
-      def initialize(@roles : Array(Role), @default : Role?, @embedder : Indexer::Embedder?)
+      # base_dir is the config file's directory: when_files globs are relative to
+      # it, so anchoring them there lets absolute file paths (fed by PreToolUse
+      # hooks) match. Nil keeps the historical relative-only matching.
+      def initialize(@roles : Array(Role), @default : Role?, @embedder : Indexer::Embedder?,
+                     @base_dir : String? = nil)
         @desc_cache = {} of String => Array(Float32)
       end
 
@@ -56,7 +60,7 @@ module MnemodocServer
         default_role = config.context.default.try do |path|
           Role.new(RoleConfig.new(file: path), config.resolve_context_path(path))
         end
-        new(roles, default_role, embedder)
+        new(roles, default_role, embedder, config.source_dir)
       end
 
       # Runs the B3 cascade and returns the chosen role with its rationale.
@@ -118,7 +122,21 @@ module MnemodocServer
       end
 
       private def file_hits(role : Role, files : Array(String)) : Int32
-        files.count { |path| role.config.when_files.any? { |glob| File.match?(glob, path) } }
+        files.count { |path| role.config.when_files.any? { |glob| glob_match?(glob, path) } }
+      end
+
+      # Matches a file path against a when_files glob. The glob is relative to the
+      # config directory, so we try it both verbatim (relative input, e.g. the CLI
+      # --files flag) and anchored at base_dir (absolute input, e.g. a PreToolUse
+      # hook's tool_input.file_path). Globstar semantics are preserved on both
+      # forms. An absolute path outside base_dir matches neither and falls through
+      # to the default role.
+      private def glob_match?(glob : String, path : String) : Bool
+        return true if File.match?(glob, path)
+        if base = @base_dir
+          return true if File.match?(File.join(base, glob), path)
+        end
+        false
       end
 
       private def task_hits(role : Role, task : String) : Int32
