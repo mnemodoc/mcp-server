@@ -248,11 +248,23 @@ module MnemodocServer
           "transcript=#{input.transcript_path.inspect} cwd=#{input.cwd.inspect}"
         }
         # The role markdown goes to stdout verbatim so the hook injects it as-is.
-        puts selection.role.content
+        # Exception: on UserPromptSubmit (query channel), an undecided prompt that
+        # only resolves to the default role would pollute every turn with the
+        # generalist context, so we stay silent. The audit line above is still
+        # written, keeping the trace even when stdout is suppressed. The files
+        # channel (PreToolUse) always prints, covering cross-cutting edits.
+        puts selection.role.content unless suppress_default_for_query?(input, selection)
       rescue ex : Roles::NoRolesError | Roles::NeedSignalError | File::Error | Indexer::EmbedderError | Hooks::UnknownClientError
         handle_error(ex)
       ensure
         embedder.try(&.close)
+      end
+
+      # True when stdout must stay empty: a UserPromptSubmit event whose selection
+      # is the default-role fallback. Other events (PreToolUse) and decisive
+      # domain matches always print.
+      private def suppress_default_for_query?(input : Hooks::HookInput, selection : Roles::Selection) : Bool
+        input.event == "UserPromptSubmit" && selection.default?
       end
 
       # Builds the selection inputs. Without --hook-stdin this is just the flags

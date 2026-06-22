@@ -22,8 +22,12 @@ module MnemodocServer
       getter role : Role
       getter reason : String
       getter candidates : Array(Candidate)
+      # True only when the role is the configured default returned as a fallback
+      # (no rule fired). Lets the query channel stay silent on undecided prompts.
+      getter? default : Bool
 
-      def initialize(@role : Role, @reason : String, @candidates : Array(Candidate))
+      def initialize(@role : Role, @reason : String, @candidates : Array(Candidate),
+                     @default : Bool = false)
       end
     end
 
@@ -95,7 +99,7 @@ module MnemodocServer
         # which is only meaningful among roles that actually matched a rule.
         if top[:score] == 0
           if default = @default
-            return Selection.new(default, "no matching rule; default role", candidates)
+            return Selection.new(default, "no matching rule; default role", candidates, default: true)
           end
           raise NeedSignalError.new
         end

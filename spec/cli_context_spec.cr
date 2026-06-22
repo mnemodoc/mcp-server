@@ -36,6 +36,25 @@ Spectator.describe "context CLI command" do
     YAML
   end
 
+  # Like write_fixture but adds a configured default (generalist) role plus a
+  # query-decisive `policies` role, so the query-channel suppression of the
+  # default can be exercised. The file roles stay narrow (app/**) so a
+  # cross-cutting PreToolUse path falls back to the default.
+  private def write_fixture_with_default
+    File.write(File.join(tmp_dir, "generalist.md"), "# Generalist role\nDefault conventions.")
+    File.write(File.join(tmp_dir, "policies.md"), "# Policies role\nScope ownership.")
+    File.write(config_path, <<-YAML)
+    server:
+      log_file: #{log_path}
+    context:
+      default: generalist.md
+      roles:
+        - file: policies.md
+          when_files: ["app/policies/**"]
+          when_query: ["policy", "ownership"]
+    YAML
+  end
+
   # Runs the binary's `context` subcommand and returns stdout, stderr, and the
   # process exit code.
   private def run_context(args : Array(String))
@@ -117,6 +136,36 @@ Spectator.describe "context CLI command" do
     result = run_context_stdin(["--config", config_path, "--hook-stdin", "--client", "notepad"], "{}")
     expect(result[:code]).not_to eq(0)
     expect(result[:err]).to contain("Error:")
+  end
+
+  it "stays silent on stdout but still audits when UserPromptSubmit resolves to the default" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture_with_default
+    payload = %({"session_id":"x","hook_event_name":"UserPromptSubmit","prompt":"merci, continue"})
+    result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to be_empty
+    log_content = File.read(log_path)
+    expect(log_content).to contain("event=UserPromptSubmit")
+    expect(log_content).to contain("role=generalist")
+  end
+
+  it "prints the domain role when a UserPromptSubmit query is decisive" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture_with_default
+    payload = %({"session_id":"x","hook_event_name":"UserPromptSubmit","prompt":"ajouter une policy de scope ownership"})
+    result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to contain("Policies role")
+  end
+
+  it "always prints the default role on a cross-cutting PreToolUse edit" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture_with_default
+    payload = %({"session_id":"x","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"#{tmp_dir}/config/initializers/cors.rb"}})
+    result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to contain("Generalist role")
   end
 
   it "writes a fixed-format audit line with empty attribution in flags-only mode" do
