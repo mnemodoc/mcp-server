@@ -48,4 +48,29 @@ Spectator.describe MnemodocServer::Indexer::Format::Markdown do
   it "returns empty array when the file is unreadable" do
     expect(handler.extract("/tmp/does-not-exist-#{Random::Secure.hex(4)}.md", mtime: 1_i64)).to be_empty
   end
+
+  # End-to-end strip through the Markdown handler: a pure breadcrumb is dropped
+  # while real content and mixed text+link lines survive.
+  context "with strip_link_only_lines enabled" do
+    subject(stripping) do
+      cfg = MnemodocServer::ChunkingConfig.from_yaml("strip_link_only_lines: true")
+      MnemodocServer::Indexer::Format::Markdown.new(MnemodocServer::Indexer::ChunkAssembler.new(cfg))
+    end
+
+    it "drops a pure breadcrumb but keeps real content and mixed link lines" do
+      content = <<-MD
+      ## Section
+
+      ← [Index](../README.md) — [Map](../MAP.md)
+
+      See [the API reference](api.md) for details on authentication.
+      MD
+      File.write(tmp, content)
+      chunks = stripping.extract(tmp, mtime: 1_i64)
+      body = chunks.join(" ", &.content)
+      expect(body).not_to contain("Index")
+      expect(body).not_to contain("Map")
+      expect(body).to contain("authentication")
+    end
+  end
 end

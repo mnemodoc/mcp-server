@@ -123,6 +123,30 @@ Spectator.describe MnemodocServer::Config do
     end
   end
 
+  describe "chunking config" do
+    it "defaults both chunking options to false" do
+      config = MnemodocServer::Config.from_yaml("")
+      expect(config.chunking.strip_link_only_lines?).to be_false
+      expect(config.chunking.merge_preamble_into_first_section?).to be_false
+    end
+
+    it "parses the chunking options from YAML" do
+      config = MnemodocServer::Config.from_yaml("chunking:\n  strip_link_only_lines: true\n  merge_preamble_into_first_section: true")
+      expect(config.chunking.strip_link_only_lines?).to be_true
+      expect(config.chunking.merge_preamble_into_first_section?).to be_true
+    end
+
+    it "overrides the chunking options via env vars" do
+      config = MnemodocServer::Config.from_yaml("")
+      config.apply_env!({
+        "MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES" => "true",
+        "MNEMODOC_CHUNKING_MERGE_PREAMBLE"        => "true",
+      })
+      expect(config.chunking.strip_link_only_lines?).to be_true
+      expect(config.chunking.merge_preamble_into_first_section?).to be_true
+    end
+  end
+
   describe "exclude config" do
     it "defaults to an empty exclude list" do
       config = MnemodocServer::Config.from_yaml("")

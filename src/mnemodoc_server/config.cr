@@ -65,6 +65,23 @@ module MnemodocServer
     property? pdf : Bool = false
   end
 
+  # Chunking behaviours that reduce navigation/preamble noise in the index.
+  # Both default to false, so without a `chunking:` section the produced index
+  # is byte-for-byte identical to the previous behaviour (strict back-compat).
+  class ChunkingConfig
+    include YAML::Serializable
+
+    # Drop lines made up solely of inline links and separators (breadcrumbs)
+    # before chunking, so a pure navigation line never forms a parasite chunk.
+    # Covers the line-based markup formats (Markdown, Org, AsciiDoc, RST); a
+    # no-op for DOM/Office formats, which flatten links to plain text.
+    property? strip_link_only_lines : Bool = false
+    # Merge the preamble (text before the first heading) into the first section
+    # chunk instead of emitting it as a standalone chunk, so a lone description
+    # never becomes an orphan chunk.
+    property? merge_preamble_into_first_section : Bool = false
+  end
+
   # Qdrant connection settings, used only when search.backend == "qdrant".
   # `collection` defaults (when empty) to the project-derived key, so two
   # same-named projects on a shared Qdrant don't collide.
@@ -122,6 +139,7 @@ module MnemodocServer
     property server : ServerConfig = ServerConfig.from_yaml("")
     property db : DbConfig = DbConfig.from_yaml("")
     property index : IndexConfig = IndexConfig.from_yaml("")
+    property chunking : ChunkingConfig = ChunkingConfig.from_yaml("")
     property context : ContextConfig = ContextConfig.from_yaml("")
     property qdrant : QdrantConfig = QdrantConfig.from_yaml("")
 
@@ -150,6 +168,8 @@ module MnemodocServer
       env["MNEMODOC_DB_PATH"]?.try { |v| @db.path = v }
       env["MNEMODOC_INDEX_CONCURRENCY"]?.try { |v| @index.concurrency = v.to_i }
       env["MNEMODOC_INDEX_PDF"]?.try { |v| @index.pdf = v == "true" }
+      env["MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES"]?.try { |v| @chunking.strip_link_only_lines = v.downcase == "true" }
+      env["MNEMODOC_CHUNKING_MERGE_PREAMBLE"]?.try { |v| @chunking.merge_preamble_into_first_section = v.downcase == "true" }
       env["MNEMODOC_EXCLUDE"]?.try { |v| @exclude = v.split(',').map(&.strip).reject(&.empty?) }
     end
 

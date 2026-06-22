@@ -75,7 +75,7 @@ src/mnemodoc_server/
     embedder.cr                    Ollama HTTP embeddings client (batch, EmbedderError)
     sectionizer.cr                 Heading-stack accumulator → Sections (shared by line/DOM handlers)
     section.cr                     Section struct (heading, parent_heading, body)
-    chunk_assembler.cr             Format-agnostic Sections → Chunks: token budget, oversized splitting, TOC filtering
+    chunk_assembler.cr             Format-agnostic Sections → Chunks: token budget, oversized splitting, TOC filtering, opt-in link-only-line strip (Markdown/Org/AsciiDoc/RST; no-op on DOM/Office) / preamble merge
     format/
       handler.cr                   Handler interface (read + parse → Chunks; never raises on content/IO)
       registry.cr                  Extension → handler dispatch; discovered-vs-named rule; plain-text fallback; opt-in PDF
@@ -175,6 +175,10 @@ index:
   concurrency: 4      # parallel files embedded at once (>= 1)
   pdf: false          # opt-in; requires pdftotext in PATH
 
+chunking:             # optional noise reduction; both default false (index unchanged). Re-index after changing.
+  strip_link_only_lines: false             # drop pure breadcrumb lines (links + separators only); line-based markup only (Markdown/Org/AsciiDoc/RST), no-op on DOM/Office
+  merge_preamble_into_first_section: false # fold the pre-heading preamble into the first section chunk
+
 context:              # optional — contextual-role selection (get_project_context tool + `context` CLI)
   default: doc/claude/roles/generalist.md  # fallback role when no rule fires and there is no signal
   roles:
@@ -226,6 +230,8 @@ All settings can be overridden at runtime without editing the YAML file:
 | `MNEMODOC_DB_PATH` | `db.path` |
 | `MNEMODOC_INDEX_CONCURRENCY` | `index.concurrency` |
 | `MNEMODOC_INDEX_PDF` | `index.pdf` |
+| `MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES` | `chunking.strip_link_only_lines` |
+| `MNEMODOC_CHUNKING_MERGE_PREAMBLE` | `chunking.merge_preamble_into_first_section` |
 | `MNEMODOC_EXCLUDE` | `exclude` (comma-separated patterns) |
 
 ## Claude Code integration

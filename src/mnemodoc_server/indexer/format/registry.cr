@@ -10,7 +10,7 @@ module MnemodocServer
 
         def initialize(config : Config, pdf_available : Bool = !Process.find_executable("pdftotext").nil?)
           @handlers = {} of String => Handler
-          assembler = ChunkAssembler.new
+          assembler = ChunkAssembler.new(config.chunking)
           markdown = Markdown.new(assembler)
           @plain = Plain.new(assembler)
 
