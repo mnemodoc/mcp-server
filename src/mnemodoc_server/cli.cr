@@ -221,9 +221,11 @@ module MnemodocServer
       define_help description: "Select and print the role to adopt for the current context"
 
       define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
-      define_flag files : Array(String), long: "files", description: "Path of a file being worked on (repeatable)"    # ameba:disable Lint/UselessAssign
-      define_flag task : String, long: "task", default: "", description: "Kind of task (debug, implement, refactor…)" # ameba:disable Lint/UselessAssign
-      define_flag query : String, long: "query", default: "", description: "The user's current request or question"   # ameba:disable Lint/UselessAssign
+      define_flag files : Array(String), long: "files", description: "Path of a file being worked on (repeatable)"                                               # ameba:disable Lint/UselessAssign
+      define_flag task : String, long: "task", default: "", description: "Kind of task (debug, implement, refactor…)"                                            # ameba:disable Lint/UselessAssign
+      define_flag query : String, long: "query", default: "", description: "The user's current request or question"                                              # ameba:disable Lint/UselessAssign
+      define_flag hook_stdin : Bool, long: "hook-stdin", default: false, description: "Read the client hook JSON from stdin and derive files/task/query from it" # ameba:disable Lint/UselessAssign
+      define_flag client : String, long: "client", default: "claude-code", description: "Hook client adapter used with --hook-stdin (default claude-code)"       # ameba:disable Lint/UselessAssign
 
       def run
         embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
@@ -231,20 +233,64 @@ module MnemodocServer
         config = MnemodocServer.config
         embedder = Indexer::Embedder.new(config.ollama)
         selector = Roles::Selector.from_config(config, embedder)
-        selection = selector.select(flags.files.to_a, flags.task, flags.query)
+        input = resolve_input
+        selection = selector.select(input.files, input.task, input.query)
         # Audit trail for role injection, written to server.log_file (never stdout,
-        # which the PreToolUse hook consumes as the role markdown).
+        # which the PreToolUse hook consumes as the role markdown). Fixed format:
+        # every field is always present (empty when absent) so log parsing stays
+        # stable across flags-only and hook-stdin modes.
         Log.for("mnemodoc-server.context").info {
-          "role=#{selection.role.name} reason=#{selection.reason.inspect}" \
-          " files=#{flags.files.to_a.inspect} task=#{flags.task.inspect}" \
-          " query=#{flags.query.inspect}"
+          "event=#{input.event} role=#{selection.role.name} reason=#{selection.reason.inspect}" \
+          " session=#{input.session_id} agent=#{input.agent_label.inspect}" \
+          " files=#{input.files.inspect} task=#{input.task.inspect} query=#{input.query.inspect}"
+        }
+        Log.for("mnemodoc-server.context").debug {
+          "transcript=#{input.transcript_path.inspect} cwd=#{input.cwd.inspect}"
         }
         # The role markdown goes to stdout verbatim so the hook injects it as-is.
         puts selection.role.content
-      rescue ex : Roles::NoRolesError | Roles::NeedSignalError | File::Error | Indexer::EmbedderError
+      rescue ex : Roles::NoRolesError | Roles::NeedSignalError | File::Error | Indexer::EmbedderError | Hooks::UnknownClientError
         handle_error(ex)
       ensure
         embedder.try(&.close)
+      end
+
+      # Builds the selection inputs. Without --hook-stdin this is just the flags
+      # (the historical behaviour). With --hook-stdin the client adapter parses
+      # the piped JSON and its fields take precedence; the flags fill any gap.
+      private def resolve_input : Hooks::HookInput
+        unless flags.hook_stdin
+          return Hooks::HookInput.new(files: flags.files.to_a, task: flags.task, query: flags.query)
+        end
+
+        # Unknown client is a wiring fault: let it raise to the rescue below.
+        adapter = Hooks::Registry.for(flags.client)
+        raw = STDIN.gets_to_end
+        hook = begin
+          adapter.parse(JSON.parse(raw))
+        rescue JSON::ParseException
+          Log.for("mnemodoc-server.context").debug {
+            "hook stdin was empty or not valid JSON; falling back to flags"
+          }
+          Hooks::HookInput.new
+        end
+        merge(hook)
+      end
+
+      # Merges a parsed hook payload over the flags: a payload field wins when
+      # present/non-empty, otherwise the corresponding flag is used.
+      private def merge(hook : Hooks::HookInput) : Hooks::HookInput
+        Hooks::HookInput.new(
+          event: hook.event,
+          files: hook.files.empty? ? flags.files.to_a : hook.files,
+          task: hook.task.empty? ? flags.task : hook.task,
+          query: hook.query.empty? ? flags.query : hook.query,
+          session_id: hook.session_id,
+          agent_id: hook.agent_id,
+          agent_type: hook.agent_type,
+          transcript_path: hook.transcript_path,
+          cwd: hook.cwd,
+        )
       end
     end
 

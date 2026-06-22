@@ -71,4 +71,61 @@ Spectator.describe "context CLI command" do
     expect(result[:err]).to contain("Error:")
     expect(result[:out]).to be_empty
   end
+
+  # Runs `context` with a JSON payload piped on stdin (hook stdin mode).
+  private def run_context_stdin(args : Array(String), stdin : String)
+    out_io = IO::Memory.new
+    err_io = IO::Memory.new
+    in_io = IO::Memory.new(stdin)
+    status = Process.run(binary, ["context"] + args, input: in_io, output: out_io, error: err_io)
+    {out: out_io.to_s, err: err_io.to_s, code: status.exit_code}
+  end
+
+  it "selects from a PreToolUse payload piped on stdin and logs the session" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    payload = %({"session_id":"sess_42","hook_event_name":"PreToolUse","tool_input":{"file_path":"src/foo.cr"}})
+    result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to contain("Crystal role")
+    log_content = File.read(log_path)
+    expect(log_content).to contain("session=sess_42")
+    expect(log_content).to contain("event=PreToolUse")
+  end
+
+  it "falls back to flags for fields the payload omits" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    # UserPromptSubmit carries no file; --files supplies the signal instead.
+    payload = %({"session_id":"s","hook_event_name":"UserPromptSubmit","prompt":""})
+    result = run_context_stdin(["--config", config_path, "--hook-stdin", "--files", "src/foo.cr"], payload)
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to contain("Crystal role")
+  end
+
+  it "degrades to flags when stdin is not valid JSON" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    result = run_context_stdin(["--config", config_path, "--hook-stdin", "--files", "src/foo.cr"], "not json")
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to contain("Crystal role")
+  end
+
+  it "errors hard on an unknown --client" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    result = run_context_stdin(["--config", config_path, "--hook-stdin", "--client", "notepad"], "{}")
+    expect(result[:code]).not_to eq(0)
+    expect(result[:err]).to contain("Error:")
+  end
+
+  it "writes a fixed-format audit line with empty attribution in flags-only mode" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    run_context(["--config", config_path, "--files", "src/foo.cr"])
+    log_content = File.read(log_path)
+    expect(log_content).to contain("event=")
+    expect(log_content).to contain("session=")
+    expect(log_content).to contain("agent=")
+  end
 end

@@ -22,7 +22,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 **Problem solved:** Replaces the costly `/context-reload` ritual that loads 5-7 large documentation files at each session start. Claude fetches only relevant passages on demand via MCP tools.
 
-**Beyond search — contextual roles:** a role-selection engine (`Roles::Selector`) picks the conventions Claude should adopt for the files/task/query at hand, exposed both as the `get_project_context` MCP tool and the `context` CLI command (the latter drives a `PreToolUse` hook so guidance lands even when the agent doesn't ask). Operational warnings raised at startup are surfaced in every tool response via the `Advisories` module, since `Log.warn` is invisible in some MCP clients.
+**Beyond search — contextual roles:** a role-selection engine (`Roles::Selector`) picks the conventions Claude should adopt for the files/task/query at hand, exposed both as the `get_project_context` MCP tool and the `context` CLI command (the latter drives a `PreToolUse` hook so guidance lands even when the agent doesn't ask). The `context` command also accepts `--hook-stdin` (with `--client`, default `claude-code`): it reads the client's raw hook JSON on stdin, derives files/query from it, and attributes the selection to its session/agent in the audit log; explicit `--files/--task/--query` flags remain as a fallback. Operational warnings raised at startup are surfaced in every tool response via the `Advisories` module, since `Log.warn` is invisible in some MCP clients.
 
 ## Development commands
 
@@ -110,6 +110,11 @@ src/mnemodoc_server/
   roles/
     role.cr                        Role at runtime (config + resolved path; markdown read lazily and cached)
     selector.cr                    Contextual-role selection (B3 cascade: weighted rules + semantic tie-break)
+  hooks/
+    input.cr                       HookInput struct: normalised client-agnostic hook payload
+    adapter.cr                     Adapter interface (parse JSON::Any → HookInput; never raises on keys)
+    registry.cr                    client name → adapter; default claude-code; unknown client raises
+    claude_code.cr                 Claude Code adapter (PreToolUse → files, UserPromptSubmit → query, + attribution)
   tools/
     query.cr                       query_documents MCP tool
     ingest.cr                      ingest_path MCP tool

@@ -295,30 +295,25 @@ Register a `PreToolUse` hook in your project's `.claude/settings.json` (the hook
 }
 ```
 
-A minimal hook reads the tool payload on stdin, extracts the edited path, calls the CLI, and prints the role to stdout — which Claude Code injects as context. **It must degrade silently** (`exit 0`) when the server or Ollama is unavailable, so a missing RAG never blocks an edit:
+A hook now only needs to **pipe the payload straight to the CLI** — the
+`--hook-stdin` flag makes `mnemodoc-server context` read the client's hook JSON,
+derive the edited file (PreToolUse) or the user query (UserPromptSubmit), and
+record the originating session/agent in its audit log. The CLI exits non-zero on
+any selection failure (no roles, no signal, Ollama down); the hook script's
+`|| true` wrapper absorbs that exit code, ensuring silent degradation so a
+missing RAG never warns or blocks an edit.
 
-```python
-#!/usr/bin/env python3
-import json, sys, subprocess
-try:
-    file_path = json.load(sys.stdin).get("tool_input", {}).get("file_path", "")
-except Exception:
-    sys.exit(0)
-if not file_path:
-    sys.exit(0)
-try:
-    result = subprocess.run(
-        ["mnemodoc-server", "context", "--files", file_path, "--config", ".mnemodoc.yml"],
-        capture_output=True, text=True, timeout=5,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        print(f"[mnemodoc] role for {file_path}:\n{result.stdout}")
-except Exception:
-    pass
-sys.exit(0)
+```sh
+#!/usr/bin/env sh
+# bin/mnemodoc-hook — forward the hook payload to the role selector.
+# `|| true` keeps the hook silent: a failed selection (no roles, no signal, Ollama
+# down) must never surface a warning or block the edit.
+mnemodoc-server context --hook-stdin --config .mnemodoc.yml || true
 ```
 
-The CLI prints the selected role's Markdown to stdout and exits 0; on any failure (no roles, no signal, missing role file, Ollama down) it writes a short message to stderr and exits non-zero, so callers can degrade cleanly.
+For clients other than Claude Code, pass `--client <name>` (only `claude-code`
+ships today) or keep the explicit flags form as the portable fallback:
+`mnemodoc-server context --files <path> --config .mnemodoc.yml`.
 
 ### Full setup examples
 
