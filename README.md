@@ -199,6 +199,25 @@ mnemodoc-server daemon status                                              # Is 
 mnemodoc-server daemon stop [--timeout 10]                                 # Stop it gracefully
 ```
 
+### Machine-readable output
+
+Every subcommand except `serve` accepts `--json`, emitting its result as a single JSON object on stdout:
+
+```sh
+$ mnemodoc-server status --json
+{"version":"1.0.0 (c47d61c)","db_path":"/path/.mnemodoc/index.db","files":12,"chunks":86,"ollama":{"host":"http://localhost:11434","model":"nomic-embed-text"}}
+
+$ mnemodoc-server search "retry policy" --json | jq -r '.results[0].content'
+```
+
+`search --json` carries the chunk bodies that the table omits, under the same key names as the `query_documents` MCP tool (`file`, `heading`, `parent_heading`, `content`, `score`) so both surfaces speak one vocabulary.
+
+**Errors** under `--json` are emitted as `{"error": "..."}` on **stderr**, with stdout left empty and exit code 1 — stdout only ever carries results, so parsing it cannot swallow a failure.
+
+**Payloads evolve additively**: fields may be added, never removed or renamed. There is no schema version to negotiate.
+
+`--quiet` prints nothing at all and reports through the exit code. It is available where that is meaningful — `index`, `delete`, `daemon status`, `daemon stop`. Exit codes are unchanged from before the flag existed, with one exception: `daemon status` exits 1 when no daemon is running, in the manner of `systemctl is-active`, which is what makes `mnemodoc-server daemon status --quiet && …` usable.
+
 `daemon stop` probes the daemon's socket before signalling anything: if nothing answers, it removes the stale socket and pid file and reports that no daemon is running, rather than risking a `SIGTERM` to an unrelated process that inherited a dead daemon's pid. If the daemon does not exit within `--timeout` seconds the command says so and stops — it never escalates to `SIGKILL` against a process holding an open SQLite database.
 
 ## MCP tools

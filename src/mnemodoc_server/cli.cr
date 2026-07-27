@@ -1,11 +1,33 @@
 module MnemodocServer
-  # Mixin that prints an error message to stderr and exits with status 1.
-  # Included by subcommands that need uniform error handling for recoverable
-  # failures such as Ollama connection errors.
+  # Mixin that reports an error and exits with status 1. Under --json the
+  # message is emitted as a JSON object, still on stderr and never on stdout:
+  # stdout then only ever carries results, so a consumer parsing it cannot
+  # mistake a failure for data.
   module CLIErrorHandling
-    private def handle_error(ex : Exception) : NoReturn
-      STDERR.puts "Error: #{ex.message}"
+    private def handle_error(ex : Exception, json : Bool = false) : NoReturn
+      if json
+        STDERR.puts({"error" => ex.message.to_s}.to_json)
+      else
+        STDERR.puts "Error: #{ex.message}"
+      end
       exit 1
+    end
+  end
+
+  # Mixin routing a subcommand's result to one of three outputs: the JSON
+  # payload, the human-readable text, or nothing at all under --quiet (where
+  # the exit code carries the outcome instead).
+  #
+  # Payloads evolve additively — fields may be added, never removed or renamed —
+  # so consumers keep working without a schema version to negotiate.
+  module CLIOutput
+    private def emit(payload, *, json : Bool, quiet : Bool, &human : -> Nil) : Nil
+      return if quiet
+      if json
+        puts payload.to_json
+      else
+        human.call
+      end
     end
   end
 
@@ -72,9 +94,14 @@ module MnemodocServer
     # Files whose mtime has not changed since the last run are skipped.
     class Index < Admiral::Command
       include CLIErrorHandling
+      include CLIOutput
       define_help description: "Index a file or directory"
 
       define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+      # ameba:disable Lint/UselessAssign
+      define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
       define_argument path : String, description: "File or directory to index", required: true # ameba:disable Lint/UselessAssign
 
       def run
@@ -100,20 +127,31 @@ module MnemodocServer
         store.embedding_model = config.ollama.model
         # Summary audit line, parity with the Serve background-indexing path.
         Log.info { "indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
-        puts "Indexed: #{index_result[:indexed]} files, skipped: #{index_result[:skipped]} (up to date), pruned: #{index_result[:pruned]}"
+        payload = {
+          indexed: index_result[:indexed],
+          skipped: index_result[:skipped],
+          pruned:  index_result[:pruned],
+        }
+        emit(payload, json: flags.json, quiet: flags.quiet) do
+          puts "Indexed: #{index_result[:indexed]} files, skipped: #{index_result[:skipped]} (up to date), pruned: #{index_result[:pruned]}"
+        end
       rescue ex : Indexer::EmbedderError
-        handle_error(ex)
+        handle_error(ex, json: flags.json)
       ensure
         store.try(&.close)
       end
     end
 
-    # Runs a hybrid search query against the local index and prints the top
-    # results as a formatted table. Intended for manual exploration and debugging
-    # rather than programmatic use.
+    # Runs a hybrid search query against the local index. Prints a formatted
+    # table for manual exploration, or the full results — chunk bodies included,
+    # which the table omits — as JSON for programmatic use.
     class Search < Admiral::Command
       include CLIErrorHandling
+      include CLIOutput
       define_help description: "Search the index from the terminal"
+
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the results as JSON, including chunk bodies"
 
       define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
       define_flag mode : String, long: "mode", default: "hybrid", description: "Search mode: hybrid|semantic|keyword" # ameba:disable Lint/UselessAssign
@@ -136,19 +174,39 @@ module MnemodocServer
         # Diagnostic trace for tuning relevance; off at the default info level.
         Log.debug { "query=#{arguments.query.inspect} mode=#{flags.mode} top_k=#{flags.top} → #{results.size} results" }
 
-        table = Tallboy.table do
-          columns(header: true) do
-            add "score", width: 8, align: :right
-            add "file", width: 40
-            add "heading"
+        payload = {
+          query: arguments.query,
+          mode:  flags.mode,
+          top_k: flags.top,
+          # Same key names and rounding as the query_documents MCP tool, so both
+          # surfaces speak one vocabulary.
+          results: results.map do |search_result|
+            {
+              file:           search_result.chunk.file_path,
+              heading:        search_result.chunk.heading,
+              parent_heading: search_result.chunk.parent_heading,
+              content:        search_result.chunk.content,
+              score:          search_result.score.round(4),
+            }
+          end,
+        }
+        # The table is built inside the human branch so --json never pays for
+        # rendering it.
+        emit(payload, json: flags.json, quiet: false) do
+          table = Tallboy.table do
+            columns(header: true) do
+              add "score", width: 8, align: :right
+              add "file", width: 40
+              add "heading"
+            end
+            results.each do |search_result|
+              row [search_result.score.round(4).to_s, search_result.chunk.file_path, search_result.chunk.heading || "(top)"]
+            end
           end
-          results.each do |search_result|
-            row [search_result.score.round(4).to_s, search_result.chunk.file_path, search_result.chunk.heading || "(top)"]
-          end
+          puts table
         end
-        puts table
       rescue ex : Indexer::EmbedderError
-        handle_error(ex)
+        handle_error(ex, json: flags.json)
       ensure
         store.try(&.close)
       end
@@ -158,9 +216,12 @@ module MnemodocServer
     # chunk count, and the configured Ollama endpoint.
     class Status < Admiral::Command
       include CLIErrorHandling
+      include CLIOutput
       define_help description: "Show index status"
 
       define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
 
       def run
         store : Store::SQLite? = nil # ameba:disable Lint/UselessAssign
@@ -169,11 +230,21 @@ module MnemodocServer
         store = MnemodocServer.open_store(config)
         files = store.list_files
 
-        puts "mnemodoc-server #{MnemodocServer.version}"
-        puts "DB: #{config.db_path}"
-        puts "Files indexed: #{files.size}"
-        puts "Chunks: #{store.chunk_count}"
-        puts "Ollama: #{config.ollama.host} (#{config.ollama.model})"
+        chunks = store.chunk_count
+        payload = {
+          version: MnemodocServer.version,
+          db_path: config.db_path,
+          files:   files.size,
+          chunks:  chunks,
+          ollama:  {host: config.ollama.host, model: config.ollama.model},
+        }
+        emit(payload, json: flags.json, quiet: false) do
+          puts "mnemodoc-server #{MnemodocServer.version}"
+          puts "DB: #{config.db_path}"
+          puts "Files indexed: #{files.size}"
+          puts "Chunks: #{chunks}"
+          puts "Ollama: #{config.ollama.host} (#{config.ollama.model})"
+        end
       ensure
         store.try(&.close)
       end
@@ -182,9 +253,14 @@ module MnemodocServer
     # Removes a single file and all its associated chunks from the SQLite store.
     class Delete < Admiral::Command
       include CLIErrorHandling
+      include CLIOutput
       define_help description: "Remove a file from the index"
 
       define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+      # ameba:disable Lint/UselessAssign
+      define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
       define_argument path : String, description: "File path to remove", required: true # ameba:disable Lint/UselessAssign
 
       def run
@@ -196,14 +272,20 @@ module MnemodocServer
         if resolved.nil?
           # Distinct from the success path: a no-op, never a misleading "deleted" INFO.
           Log.debug { "delete skipped: '#{arguments.path}' not found in index" }
-          puts "Not found in index: #{arguments.path}"
+          # Exit code stays 0, as before the flags existed: changing it would
+          # silently break any current caller.
+          emit({found: false, path: arguments.path}, json: flags.json, quiet: flags.quiet) do
+            puts "Not found in index: #{arguments.path}"
+          end
         else
           # Chunk count captured before deletion (CASCADE wipes the rows) so the
           # audit line mirrors the crawler's and the MCP delete tool's style.
           chunk_count = store.chunk_ids_for_file(resolved).size
           store.delete_file(resolved)
           Log.info { "deleted #{resolved} (#{chunk_count} chunks, manual removal via CLI)" }
-          puts "Deleted: #{resolved}"
+          emit({found: true, path: resolved, chunks: chunk_count}, json: flags.json, quiet: flags.quiet) do
+            puts "Deleted: #{resolved}"
+          end
         end
       ensure
         store.try(&.close)
@@ -226,6 +308,8 @@ module MnemodocServer
       define_flag query : String, long: "query", default: "", description: "The user's current request or question"                                              # ameba:disable Lint/UselessAssign
       define_flag hook_stdin : Bool, long: "hook-stdin", default: false, description: "Read the client hook JSON from stdin and derive files/task/query from it" # ameba:disable Lint/UselessAssign
       define_flag client : String, long: "client", default: "claude-code", description: "Hook client adapter used with --hook-stdin (default claude-code)"       # ameba:disable Lint/UselessAssign
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the selection as JSON instead of the role markdown"
 
       def run
         embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
@@ -253,9 +337,26 @@ module MnemodocServer
         # generalist context, so we stay silent. The audit line above is still
         # written, keeping the trace even when stdout is suppressed. The files
         # channel (PreToolUse) always prints, covering cross-cutting edits.
-        puts selection.role.content unless suppress_default_for_query?(input, selection)
+        suppressed = suppress_default_for_query?(input, selection)
+
+        # Under --json the payload is always emitted, `suppressed` carrying what
+        # the text mode expresses by staying silent — an empty stdout would be
+        # indistinguishable from a failure. The hook never passes --json, so the
+        # verbatim-markdown contract above is untouched.
+        if flags.json
+          puts({
+            role:       selection.role.name,
+            reason:     selection.reason,
+            default:    selection.default?,
+            suppressed: suppressed,
+            candidates: selection.candidates.map { |candidate| {name: candidate.name, score: candidate.score} },
+            content:    selection.role.content,
+          }.to_json)
+        else
+          puts selection.role.content unless suppressed
+        end
       rescue ex : Roles::NoRolesError | Roles::NeedSignalError | File::Error | Indexer::EmbedderError | Hooks::UnknownClientError
-        handle_error(ex)
+        handle_error(ex, json: flags.json)
       ensure
         embedder.try(&.close)
       end
@@ -309,20 +410,32 @@ module MnemodocServer
     # Prints the application version and the full Crystal compiler description,
     # useful for bug reports and build reproducibility checks.
     class Info < Admiral::Command
+      include CLIOutput
       define_help description: "Show version and build info"
-      define_flag licenses : Bool, description: "Print bundled third-party license texts", default: false # ameba:disable Lint/UselessAssign
+      define_flag licenses : Bool, description: "Print bundled third-party license texts", default: false
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
 
       def run
-        puts "version: #{MnemodocServer.version}"
-        puts
-        puts "crystal:"
-        puts Crystal::DESCRIPTION
+        # Read once: the baked-in license files are IO objects, so a second pass
+        # over them would come back empty.
+        licenses = flags.licenses ? MnemodocServer::Licenses.files.map { |file| {path: file.path, text: file.gets_to_end} } : nil
 
-        if flags.licenses
-          MnemodocServer::Licenses.files.each do |file|
+        payload = {
+          version:  MnemodocServer.version,
+          crystal:  Crystal::DESCRIPTION,
+          licenses: licenses,
+        }
+        emit(payload, json: flags.json, quiet: false) do
+          puts "version: #{MnemodocServer.version}"
+          puts
+          puts "crystal:"
+          puts Crystal::DESCRIPTION
+
+          licenses.try &.each do |license|
             puts
-            puts "=== #{file.path} ==="
-            puts file.gets_to_end
+            puts "=== #{license[:path]} ==="
+            puts license[:text]
           end
         end
       end
@@ -340,30 +453,50 @@ module MnemodocServer
       # what pid. Never signals anything.
       class Status < Admiral::Command
         include CLIErrorHandling
+        include CLIOutput
         define_help description: "Show whether the project's daemon is running"
 
         define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+        # ameba:disable Lint/UselessAssign
+        define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+        # ameba:disable Lint/UselessAssign
+        define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
 
+        # Exits 1 when no daemon is running, in the manner of `systemctl
+        # is-active`, so `--quiet` is usable in a shell test. This command is
+        # new, so no existing caller depends on the previous exit code.
         def run
           MnemodocServer.init_app!(flags.config)
           config = MnemodocServer.config
 
-          unless config.server.daemon?
-            puts "Daemon mode is disabled (server.daemon: false); `serve --stdio` runs standalone."
-            return
+          enabled = config.server.daemon?
+          running = enabled && MnemodocServer.daemon_healthy?(config)
+          pid = running ? MnemodocServer.daemon_pid(config) : nil
+
+          payload = {
+            daemon_enabled: enabled,
+            socket:         config.daemon_socket_path,
+            running:        running,
+            pid:            pid,
+          }
+          emit(payload, json: flags.json, quiet: flags.quiet) do
+            unless enabled
+              puts "Daemon mode is disabled (server.daemon: false); `serve --stdio` runs standalone."
+              next
+            end
+
+            puts "Socket: #{config.daemon_socket_path}"
+            if running
+              puts "Status: running"
+              puts "PID: #{pid || "unknown (pid file missing)"}"
+            else
+              puts "Status: not running"
+            end
           end
 
-          puts "Socket: #{config.daemon_socket_path}"
-          unless MnemodocServer.daemon_healthy?(config)
-            puts "Status: not running"
-            return
-          end
-
-          puts "Status: running"
-          pid = MnemodocServer.daemon_pid(config)
-          puts "PID: #{pid || "unknown (pid file missing)"}"
+          exit 1 unless running
         rescue ex : File::Error
-          handle_error(ex)
+          handle_error(ex, json: flags.json)
         end
       end
 
@@ -372,11 +505,16 @@ module MnemodocServer
       # is reachable, and never escalates to SIGKILL.
       class Stop < Admiral::Command
         include CLIErrorHandling
+        include CLIOutput
         define_help description: "Stop the project's daemon"
 
         define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
         # ameba:disable Lint/UselessAssign
         define_flag timeout : Int32, long: "timeout", default: 10, description: "Seconds to wait for the daemon to exit"
+        # ameba:disable Lint/UselessAssign
+        define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+        # ameba:disable Lint/UselessAssign
+        define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
 
         def run
           MnemodocServer.init_app!(flags.config)
@@ -388,23 +526,33 @@ module MnemodocServer
           unless MnemodocServer.daemon_healthy?(config)
             File.delete?(config.daemon_socket_path)
             File.delete?(config.daemon_pid_path)
-            puts "Daemon is not running; cleaned up stale socket and pid file."
+            emit({stopped: false, pid: nil, reason: "not running; cleaned up stale socket and pid file"},
+              json: flags.json, quiet: flags.quiet) do
+              puts "Daemon is not running; cleaned up stale socket and pid file."
+            end
             return
           end
 
           pid = MnemodocServer.daemon_pid(config)
           if pid.nil?
-            handle_error(Exception.new("daemon is running but #{config.daemon_pid_path} is missing; cannot determine its pid"))
+            handle_error(
+              Exception.new("daemon is running but #{config.daemon_pid_path} is missing; cannot determine its pid"),
+              json: flags.json)
           end
 
           Process.signal(Signal::TERM, pid)
-          if MnemodocServer.await_daemon_exit(config, flags.timeout.seconds)
+          unless MnemodocServer.await_daemon_exit(config, flags.timeout.seconds)
+            handle_error(
+              Exception.new("daemon (pid #{pid}) did not exit within #{flags.timeout}s; not escalating to SIGKILL"),
+              json: flags.json)
+          end
+
+          emit({stopped: true, pid: pid, reason: "signalled and exited"},
+            json: flags.json, quiet: flags.quiet) do
             puts "Daemon stopped (pid #{pid})."
-          else
-            handle_error(Exception.new("daemon (pid #{pid}) did not exit within #{flags.timeout}s; not escalating to SIGKILL"))
           end
         rescue ex : File::Error | RuntimeError
-          handle_error(ex)
+          handle_error(ex, json: flags.json)
         end
       end
 

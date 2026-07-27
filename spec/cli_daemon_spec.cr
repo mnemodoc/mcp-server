@@ -66,10 +66,11 @@ Spectator.describe "daemon CLI" do
   end
 
   describe "daemon status" do
+    # Exits non-zero when nothing is running, like `systemctl is-active`.
     it "reports that no daemon is running" do
       write_config
       stdout, _, status = run_cli("daemon", "status", "--config", config_path)
-      expect(status.success?).to be_true
+      expect(status.success?).to be_false
       expect(stdout).to contain("not running")
     end
 
@@ -83,10 +84,11 @@ Spectator.describe "daemon CLI" do
       end
     end
 
+    # Disabled means nothing is running either, so the exit code says no.
     it "says so when daemon mode is disabled" do
       write_config(daemon: false)
       stdout, _, status = run_cli("daemon", "status", "--config", config_path)
-      expect(status.success?).to be_true
+      expect(status.success?).to be_false
       expect(stdout).to contain("disabled")
     end
   end
