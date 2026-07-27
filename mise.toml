@@ -51,7 +51,12 @@ description = "Run Crystal spec"
 # licenses/ folder (baked_file_system, at compile time). Both are generated, so
 # depend on their tasks — otherwise a standalone `mise dev:spec` (e.g. in CI,
 # which doesn't run dev:build first) fails to compile.
-depends = ["dev:vec0-objects", "dev:licenses"]
+#
+# dev:build is in there too because the CLI specs drive the compiled binary at
+# bin/, not the library: without it they fail with "no such file or directory"
+# in any context that runs dev:spec on its own. Locally that stayed invisible,
+# since dev:check builds before it.
+depends = ["dev:vec0-objects", "dev:licenses", "dev:build"]
 run = "crystal spec {{vars.SPEC_OPTS}}"
 
 [tasks."dev:doc"]
