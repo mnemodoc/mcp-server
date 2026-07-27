@@ -82,3 +82,31 @@
 - question: Do edits show up without restarting anything?
   expected_file: daemon.md
   expected_heading: Live re-indexing
+
+# Off-topic prompts: the hook must stay silent on these. Without them the
+# threshold would be calibrated only on prompts that should fire — half the
+# problem. expected_file/heading are unused here but kept for schema uniformity.
+- question: write me a haiku about cats
+  expected_file: indexing.md
+  expected_heading: Excluding paths
+  expect_fire: false
+
+- question: what is the capital of France?
+  expected_file: indexing.md
+  expected_heading: Excluding paths
+  expect_fire: false
+
+- question: ok
+  expected_file: indexing.md
+  expected_heading: Excluding paths
+  expect_fire: false
+
+- question: continue
+  expected_file: indexing.md
+  expected_heading: Excluding paths
+  expect_fire: false
+
+- question: explain monads in Haskell
+  expected_file: indexing.md
+  expected_heading: Excluding paths
+  expect_fire: false

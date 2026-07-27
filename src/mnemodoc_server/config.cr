@@ -118,6 +118,32 @@ module MnemodocServer
   end
 
   # Contextual-role section: an optional fallback role plus the candidate roles.
+  # Settings for the UserPromptSubmit hook, which runs before every user
+  # message. Its threshold is the gate deciding whether a prompt concerns this
+  # corpus at all — the single most consequential setting the hook has, since
+  # too low means noise on every turn and too high means permanent silence.
+  class HookConfig
+    include YAML::Serializable
+
+    # Cosine similarity the best passage must reach for the hook to inject.
+    # Measured on the benchmark corpus, not chosen: the 18 project questions
+    # scored 0.542 and above for their best passage, while 8 off-topic prompts
+    # peaked at 0.488. 0.515 sits in the middle of that 0.054 margin — which is
+    # thin, so this is a defensible default rather than a tuned constant.
+    # Re-calibrate per corpus with `mise bench:tokens`.
+    property similarity_threshold : Float64 = 0.515
+
+    # When the runner-up sits within this cosine distance of the best passage,
+    # the ranking is not decisive and the contenders are injected together.
+    # 0.02 is measured, not chosen: on the benchmark corpus it recovers the full
+    # accuracy of always injecting three passages (94.4 % against 83.3 % for one)
+    # while widening on only 6 prompts out of 18, for 45 % less context.
+    property margin_threshold : Float64 = 0.02
+
+    # Ceiling on passages injected when the margin is thin.
+    property max_passages : Int32 = 3
+  end
+
   class ContextConfig
     include YAML::Serializable
 
@@ -147,6 +173,7 @@ module MnemodocServer
     property index : IndexConfig = IndexConfig.from_yaml("")
     property chunking : ChunkingConfig = ChunkingConfig.from_yaml("")
     property context : ContextConfig = ContextConfig.from_yaml("")
+    property hook : HookConfig = HookConfig.from_yaml("")
     property qdrant : QdrantConfig = QdrantConfig.from_yaml("")
 
     # Overrides selected fields from MNEMODOC_* environment variables, letting
@@ -164,6 +191,9 @@ module MnemodocServer
       env["MNEMODOC_QDRANT_COLLECTION"]?.try { |v| @qdrant.collection = v }
       env["MNEMODOC_SEARCH_RECENCY_DAYS"]?.try { |v| @search.recency_days = v.to_i }
       env["MNEMODOC_SEARCH_RECENCY_BOOST"]?.try { |v| @search.recency_boost = v.to_f }
+      env["MNEMODOC_HOOK_THRESHOLD"]?.try { |v| @hook.similarity_threshold = v.to_f }
+      env["MNEMODOC_HOOK_MARGIN"]?.try { |v| @hook.margin_threshold = v.to_f }
+      env["MNEMODOC_HOOK_MAX_PASSAGES"]?.try { |v| @hook.max_passages = v.to_i }
       env["MNEMODOC_SEARCH_KEYWORD_WEIGHT"]?.try { |v| @search.keyword_weight = v.to_f }
       env["MNEMODOC_SERVER_SSE_HOST"]?.try { |v| @server.sse_host = v }
       env["MNEMODOC_SERVER_SSE_PORT"]?.try { |v| @server.sse_port = v.to_i }
@@ -294,6 +324,9 @@ module MnemodocServer
       errors << "server.sse_port must be 1-65535" unless @server.sse_port.in?(1..65535)
       errors << "server.daemon_idle_timeout must be >= 1" unless @server.daemon_idle_timeout >= 1
       errors << "server.daemon_watch_interval must be >= 1" unless @server.daemon_watch_interval >= 1
+      errors << "hook.similarity_threshold must be between 0 and 1" unless (0.0..1.0).includes?(@hook.similarity_threshold)
+      errors << "hook.margin_threshold must be between 0 and 1" unless (0.0..1.0).includes?(@hook.margin_threshold)
+      errors << "hook.max_passages must be >= 1" unless @hook.max_passages >= 1
       errors << "index.concurrency must be >= 1" unless @index.concurrency >= 1
       begin
         ::Log::Severity.parse(@server.log_level)

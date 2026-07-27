@@ -33,7 +33,8 @@ module Bench
         begin
           index_corpus(config, store, embedder)
           outcomes = questions.map { |question| ask(question, config, store, embedder) }
-          Report.new(mode: @counter.mode, baseline_cost: baseline_cost, top_k: @top_k, outcomes: outcomes)
+          Report.new(mode: @counter.mode, baseline_cost: baseline_cost, top_k: @top_k,
+            outcomes: outcomes, threshold: config.hook.similarity_threshold)
         ensure
           embedder.close
           store.close
@@ -103,6 +104,15 @@ module Bench
       returned = results.map { |result| "#{File.basename(result.chunk.file_path)} › #{normalize_heading(result.chunk.heading)}" }
       cost = results.sum { |result| @counter.count(result.chunk.content) }
 
+      # Replays the shipped selection rule rather than a copy of it, so what is
+      # measured is what the hook would actually inject.
+      injected = MnemodocServer::Search::HookSelection.choose(results,
+        similarity_threshold: config.hook.similarity_threshold,
+        margin_threshold: config.hook.margin_threshold,
+        max_passages: config.hook.max_passages)
+      similarity = results.first?.try(&.similarity)
+      injected_keys = injected.map { |result| "#{File.basename(result.chunk.file_path)} › #{normalize_heading(result.chunk.heading)}" }
+
       QuestionOutcome.new(
         question: question.question,
         retrieved_cost: cost,
@@ -110,6 +120,12 @@ module Bench
         expected_file: question.expected_file,
         expected_heading: question.expected_heading,
         returned: returned,
+        similarity: similarity,
+        fired: !injected.empty?,
+        expect_fire: question.expect_fire?,
+        injected_count: injected.size,
+        injected_cost: injected.sum { |result| @counter.count(result.chunk.content) },
+        injected_hit: injected_keys.includes?(question.key),
       )
     end
   end

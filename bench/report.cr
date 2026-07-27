@@ -9,12 +9,23 @@ module Bench
     getter question : String
     getter retrieved_cost : Int32
     getter? hit : Bool
+    # Best cosine seen for this prompt, and whether it cleared the threshold.
+    getter similarity : Float64?
+    getter? fired : Bool
+    getter? expect_fire : Bool
+    # What the hook would actually have injected — the shipped rule's outcome,
+    # which is not the same as the top-k the cost figures above describe.
+    getter injected_count : Int32
+    getter injected_cost : Int32
+    getter? injected_hit : Bool
     getter expected_file : String
     getter expected_heading : String
     # The (file, heading) pairs the search returned, for diagnosing a miss.
     getter returned : Array(String)
 
-    def initialize(@question, @retrieved_cost, @hit, @expected_file, @expected_heading, @returned)
+    def initialize(@question, @retrieved_cost, @hit, @expected_file, @expected_heading, @returned,
+                   @similarity = nil, @fired = false, @expect_fire = true,
+                   @injected_count = 0, @injected_cost = 0, @injected_hit = false)
     end
   end
 
@@ -30,25 +41,71 @@ module Bench
     getter mode : String
     getter baseline_cost : Int32
     getter top_k : Int32
+    getter threshold : Float64
     @[JSON::Field(key: "questions")]
     getter outcomes : Array(QuestionOutcome)
 
-    def initialize(@mode, @baseline_cost, @top_k, @outcomes)
+    def initialize(@mode, @baseline_cost, @top_k, @outcomes, @threshold = 0.0)
+    end
+
+    # Questions the hook was meant to fire on: recall and cost are computed on
+    # these alone, since off-topic entries have no expected passage.
+    def answerable : Array(QuestionOutcome)
+      @outcomes.select(&.expect_fire?)
+    end
+
+    # Share of on-topic prompts the hook would have injected on.
+    def firing_rate : Float64
+      wanted = answerable
+      return 0.0 if wanted.empty?
+      wanted.count(&.fired?) / wanted.size.to_f
+    end
+
+    # Of the on-topic prompts the hook fires on, how often the passage holding
+    # the answer is among those injected. This is the figure a user actually
+    # experiences — not the top-k recall above, which describes a wider window.
+    def hook_accuracy : Float64
+      fired = answerable.select(&.fired?)
+      return 0.0 if fired.empty?
+      fired.count(&.injected_hit?) / fired.size.to_f
+    end
+
+    def mean_injected_cost : Float64
+      fired = answerable.select(&.fired?)
+      return 0.0 if fired.empty?
+      fired.sum(&.injected_cost) / fired.size.to_f
+    end
+
+    def mean_injected_count : Float64
+      fired = answerable.select(&.fired?)
+      return 0.0 if fired.empty?
+      fired.sum(&.injected_count) / fired.size.to_f
+    end
+
+    # Share of off-topic prompts the hook would have wrongly injected on — the
+    # half of the calibration that a threshold tuned only on real questions
+    # never sees.
+    def false_fire_rate : Float64
+      unwanted = @outcomes.reject(&.expect_fire?)
+      return 0.0 if unwanted.empty?
+      unwanted.count(&.fired?) / unwanted.size.to_f
     end
 
     def recall : Float64
-      return 0.0 if @outcomes.empty?
-      @outcomes.count(&.hit?) / @outcomes.size.to_f
+      wanted = answerable
+      return 0.0 if wanted.empty?
+      wanted.count(&.hit?) / wanted.size.to_f
     end
 
     def mean_retrieved : Float64
-      return 0.0 if @outcomes.empty?
-      @outcomes.sum(&.retrieved_cost) / @outcomes.size.to_f
+      wanted = answerable
+      return 0.0 if wanted.empty?
+      wanted.sum(&.retrieved_cost) / wanted.size.to_f
     end
 
     def median_retrieved : Float64
-      return 0.0 if @outcomes.empty?
-      sorted = @outcomes.map(&.retrieved_cost).sort!
+      return 0.0 if answerable.empty?
+      sorted = answerable.map(&.retrieved_cost).sort!
       middle = sorted.size // 2
       sorted.size.odd? ? sorted[middle].to_f : (sorted[middle - 1] + sorted[middle]) / 2.0
     end
@@ -71,7 +128,16 @@ module Bench
       io << "Retrieved     : mean " << mean_retrieved.round(1) << ", median " << median_retrieved.round(1)
       io << " (top-" << @top_k << ")\n"
       io << "Saving        : " << (saving_ratio * 100).round(1) << " %\n"
-      io << "Recall        : " << (recall * 100).round(1) << " % of " << @outcomes.size << " questions\n"
+      io << "Recall        : " << (recall * 100).round(1) << " % of " << answerable.size << " questions\n"
+      io << "Hook fires    : " << (firing_rate * 100).round(1) << " % on topic"
+      unwanted = @outcomes.size - answerable.size
+      if unwanted > 0
+        io << ", " << (false_fire_rate * 100).round(1) << " % on " << unwanted << " off-topic prompts"
+      end
+      io << " (threshold " << @threshold << ")\n"
+      io << "Hook injects  : " << mean_injected_count.round(2) << " passage(s), "
+      io << mean_injected_cost.round(1) << " on average — right "
+      io << (hook_accuracy * 100).round(1) << " % of the time\n"
 
       unless meaningful?
         io << "\n  ⚠ NOT MEANINGFUL — recall is zero, so the saving above only reflects\n"
@@ -101,6 +167,12 @@ module Bench
         json.field "median_retrieved", median_retrieved
         json.field "saving_ratio", saving_ratio
         json.field "recall", recall
+        json.field "threshold", @threshold
+        json.field "firing_rate", firing_rate
+        json.field "false_fire_rate", false_fire_rate
+        json.field "hook_accuracy", hook_accuracy
+        json.field "mean_injected_cost", mean_injected_cost
+        json.field "mean_injected_count", mean_injected_count
         json.field "meaningful", meaningful?
         json.field "questions", @outcomes
       end

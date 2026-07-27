@@ -13,7 +13,13 @@ module Bench
     getter expected_file : String
     getter expected_heading : String
 
-    def initialize(@question, @expected_file, @expected_heading)
+    # Whether the prompt hook is expected to fire on this prompt. Off-topic
+    # entries set it to false: a gate calibrated only on prompts that should
+    # fire is calibrated on half the problem.
+    @[YAML::Field(key: "expect_fire")]
+    getter? expect_fire : Bool = true
+
+    def initialize(@question, @expected_file, @expected_heading, @expect_fire = true)
     end
 
     # How the harness identifies a returned passage, and therefore how a hit is

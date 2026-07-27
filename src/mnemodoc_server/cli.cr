@@ -187,6 +187,9 @@ module MnemodocServer
               parent_heading: search_result.chunk.parent_heading,
               content:        search_result.chunk.content,
               score:          search_result.score.round(4),
+              # Calibrated cosine, comparable across queries — unlike score,
+              # which is a rank artifact. nil for a keyword-only match.
+              similarity: search_result.similarity.try(&.round(4)),
             }
           end,
         }
@@ -298,6 +301,76 @@ module MnemodocServer
     # (built via Selector.from_config), so role selection has a single source of
     # truth. The mechanical PreToolUse hook uses this command because it runs
     # outside an MCP session and so cannot call the tool.
+    # Injects the single most relevant documentation passage before the agent
+    # reasons, so a passage reaches it whether or not it thinks to search.
+    #
+    # It runs synchronously ahead of every user message, which sets two hard
+    # rules. It stays silent unless the best passage clears
+    # `hook.similarity_threshold` — a cosine, comparable across queries, unlike
+    # the fused score which is a rank artifact. And it never gets in the way:
+    # unparseable input, unreachable Ollama, empty index, missing config all
+    # print nothing and exit 0, because a hook that errors in front of the user
+    # on an unrelated turn is worse than one that says nothing.
+    class PromptHook < Admiral::Command
+      define_help description: "Read a client hook payload on stdin and inject the best matching passage"
+
+      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      # ameba:disable Lint/UselessAssign
+      define_flag client : String, long: "client", default: "claude-code", description: "Hook client adapter (default claude-code)"
+
+      def run
+        store : Store::SQLite? = nil
+        embedder : Indexer::Embedder? = nil
+
+        payload = STDIN.gets_to_end
+        return if payload.strip.empty?
+
+        hook = Hooks::Registry.for(flags.client).parse(JSON.parse(payload))
+        prompt = hook.query
+        return if prompt.strip.empty?
+
+        MnemodocServer.init_app!(flags.config)
+        config = MnemodocServer.config
+        store = MnemodocServer.open_store(config)
+        embedder = Indexer::Embedder.new(config.ollama)
+
+        query_vec = embedder.embed_batch([prompt]).first
+        results = MnemodocServer::Search::Hybrid.new(config.search, MnemodocServer.qdrant_index(config))
+          .search(prompt, query_vec, store)
+
+        chosen = MnemodocServer::Search::HookSelection.choose(results,
+          similarity_threshold: config.hook.similarity_threshold,
+          margin_threshold: config.hook.margin_threshold,
+          max_passages: config.hook.max_passages)
+        return if chosen.empty?
+
+        Log.for("mnemodoc-server.prompt-hook").info {
+          "injected #{chosen.size} passage(s): #{chosen.map(&.chunk.file_path).join(", ")}"
+        }
+        chosen.each { |passage| print_passage(passage) }
+      rescue
+        # Deliberately catch everything: this runs in the user's critical path
+        # and has no business surfacing any failure of ours to them.
+      ensure
+        embedder.try(&.close)
+        store.try(&.close)
+      end
+
+      # Framed and attributed so the model can tell this from the user's own
+      # words, and can cite or discount it knowing where it came from.
+      private def print_passage(result : MnemodocServer::Search::SearchResult) : Nil
+        heading = result.chunk.heading.try(&.lstrip.lstrip('#').strip)
+        source = File.basename(result.chunk.file_path)
+        source += " › #{heading}" if heading && !heading.empty?
+
+        puts "<project-documentation source=#{source.inspect}>"
+        puts "Retrieved from this project's indexed documentation because it matches the request."
+        puts
+        puts result.chunk.content
+        puts "</project-documentation>"
+      end
+    end
+
     class Context < Admiral::Command
       include CLIErrorHandling
       define_help description: "Select and print the role to adopt for the current context"
@@ -573,6 +646,7 @@ module MnemodocServer
     register_sub_command delete, Delete, description: "Remove a file from the index"
     register_sub_command context, Context, description: "Select and print the role for the current context"
     register_sub_command info, Info, description: "Show version and build info"
+    register_sub_command "prompt-hook", PromptHook, description: "Inject the best matching passage for a user prompt (client hook)"
     register_sub_command daemon, Daemon, description: "Inspect or stop the per-project daemon"
 
     # Prints the top-level help text when no subcommand is given.

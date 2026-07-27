@@ -258,4 +258,61 @@ Spectator.describe MnemodocServer::Search do
       expect(results.map(&.chunk.file_path)).to contain("doc/k.md")
     end
   end
+  # The fused score is an RRF rank artifact with no absolute meaning: the top
+  # hit of an off-topic query and of a perfectly targeted one score the same.
+  # The prompt hook has to decide whether a prompt is about this project at
+  # all, so the calibrated cosine has to survive fusion alongside it.
+  describe "semantic similarity carried through fusion" do
+    # 768-dim unit vectors along a single axis: two different axes are exactly
+    # orthogonal, so the expected cosine is 1.0 or 0.0 with no arithmetic noise.
+    private def axis(index : Int32) : Array(Float32)
+      Array(Float32).new(768) { |i| i == index ? 1.0_f32 : 0.0_f32 }
+    end
+
+    private def seeded(path : String, heading : String, content : String, vec : Array(Float32))
+      db = "/tmp/mnemodoc-sim-#{Random::Secure.hex(4)}.db"
+      store = MnemodocServer::Store::SQLite.new(db)
+      mtime = Time.utc.to_unix
+      store.upsert_file(path, mtime: mtime)
+      store.save_chunks([
+        MnemodocServer::Chunk.new(file_path: path, heading: heading, parent_heading: nil,
+          content: content, embedding: vec, token_count: 1, mtime: mtime),
+      ])
+      {store, db}
+    end
+
+    it "exposes the cosine of a semantically matched chunk" do
+      store, db = seeded("/docs/a.md", "## Exact", "exact match", axis(0))
+      begin
+        config = MnemodocServer::SearchConfig.from_yaml("mode: semantic\ntop_k: 2")
+        results = MnemodocServer::Search::Hybrid.new(config).search("", axis(0), store)
+
+        best = results.first
+        similarity = best.similarity
+        expect(similarity).not_to be_nil
+        expect(similarity || 0.0).to be_close(1.0, 1e-5)
+        # The fused score stays what it was: RRF still decides the ordering.
+        expect(best.score).to be > 0.0
+      ensure
+        store.close
+        File.delete(db) rescue nil
+      end
+    end
+
+    # A chunk surfaced only by the lexical signal was never scored against the
+    # query vector, so it must not be able to clear a similarity threshold.
+    it "leaves the cosine unset for a keyword-only match" do
+      store, db = seeded("/docs/b.md", "## Only lexical", "pangolin taxonomy", axis(1))
+      begin
+        config = MnemodocServer::SearchConfig.from_yaml("mode: keyword\ntop_k: 2")
+        results = MnemodocServer::Search::Hybrid.new(config).search("pangolin", axis(0), store)
+
+        expect(results.size).to be > 0
+        expect(results.first.similarity).to be_nil
+      ensure
+        store.close
+        File.delete(db) rescue nil
+      end
+    end
+  end
 end

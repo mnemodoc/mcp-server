@@ -473,4 +473,39 @@ Spectator.describe MnemodocServer::Config do
       expect(MnemodocServer::Config.from_yaml("").qdrant_collection).not_to be_empty
     end
   end
+  # The prompt hook fires on every user message, so the gate that decides
+  # whether it stays silent is the single most consequential setting it has.
+  describe "hook config" do
+    it "defaults the similarity threshold to the measured separation point" do
+      config = MnemodocServer::Config.from_yaml("")
+      expect(config.hook.similarity_threshold).to be_close(0.515, 1e-9)
+    end
+
+    it "parses the threshold from YAML" do
+      config = MnemodocServer::Config.from_yaml("hook:\n  similarity_threshold: 0.62")
+      expect(config.hook.similarity_threshold).to be_close(0.62, 1e-9)
+    end
+
+    it "applies the environment override" do
+      config = MnemodocServer::Config.from_yaml("")
+      config.apply_env!({"MNEMODOC_HOOK_THRESHOLD" => "0.71"})
+      expect(config.hook.similarity_threshold).to be_close(0.71, 1e-9)
+    end
+
+    # A cosine lives in 0..1; anything outside is a configuration slip that
+    # would silence the hook forever or make it fire on everything.
+    it "rejects a threshold outside 0..1" do
+      %w[-0.1 1.5].each do |value|
+        config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nhook:\n  similarity_threshold: #{value}")
+        expect { config.validate! }.to raise_error(ArgumentError, /similarity_threshold/)
+      end
+    end
+
+    it "accepts the bounds themselves" do
+      %w[0.0 1.0].each do |value|
+        config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nhook:\n  similarity_threshold: #{value}")
+        expect { config.validate! }.not_to raise_error
+      end
+    end
+  end
 end

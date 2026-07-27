@@ -71,7 +71,7 @@ bench/                              Token-cost benchmark (bench.cr entry, runner
 src/mnemodoc-server.cr              Entry point — nothing but `CLI.run`. Compiled to the binary (`SOURCE_FILE` in mise.toml)
 src/mnemodoc_server.cr              Library root: every require, plus init_app!, open_store, run_transport, serve_stdio/sse, watch_and_index, daemon helpers. Requiring it has **no side effect** — specs and bench/ require this, never the entry point
 src/mnemodoc_server/
-  cli.cr                           Admiral CLI — subcommands: serve, index, search, status, delete, context, info, daemon (status/stop); CLIOutput routes each result to --json / text / --quiet
+  cli.cr                           Admiral CLI — subcommands: serve, index, search, status, delete, context, info, prompt-hook, daemon (status/stop); CLIOutput routes each result to --json / text / --quiet
   config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs); daemon_socket_path / daemon_lock_path
   daemon.cr                        Per-project daemon: owns the SQLite index, spawns background indexing + a live file-watch (watch_and_index), serves MCP over a UNIX socket, self-exits when idle
   daemon_proxy.cr                  Default `serve --stdio` path when server.daemon is true: auto-spawns the daemon (flock-serialised), forwards JSON-RPC over the UNIX socket, self-heals on daemon death (≤3 attempts), falls back to in-process standalone on exhaustion
@@ -151,6 +151,43 @@ Every subcommand except `serve` accepts `--json` (one JSON object on stdout). Er
 **Payloads evolve additively** — fields may be added, never removed or renamed. There is deliberately no schema version field.
 
 `--quiet` (on `index`, `delete`, `daemon status`, `daemon stop`) prints nothing and reports through the exit code. Existing exit codes are unchanged; the one exception is `daemon status`, which exits 1 when no daemon is running (`systemctl is-active` semantics) — it was added in the same cycle, so no caller depended on the old code.
+
+### The prompt hook
+
+`prompt-hook` reads a client hook payload on stdin (`Hooks::Registry`, same
+adapters as `context`) and injects the best matching passage on
+`UserPromptSubmit` — documentation arrives whether or not the agent calls
+`query_documents`.
+
+It gates on **cosine similarity**, not on the fused search score: the latter is
+an RRF rank artifact with no absolute meaning, identical for the top hit of an
+off-topic query and of a targeted one. `SearchResult#similarity` carries the
+cosine through fusion for exactly this purpose, and is `nil` for a chunk
+surfaced by the lexical signal alone — which therefore can never clear the gate.
+
+`Search::HookSelection` holds the whole rule — deliberately on its own, so the
+benchmark replays the shipped logic instead of a copy that could drift from it.
+Two gates: `hook.similarity_threshold` (0.515, env `MNEMODOC_HOOK_THRESHOLD`)
+decides *whether* to inject; `hook.margin_threshold` (0.02, env
+`MNEMODOC_HOOK_MARGIN`) decides *how many* — a runner-up within that cosine
+distance means the ranking is not decisive, so contenders go over together, up
+to `hook.max_passages` (3, env `MNEMODOC_HOOK_MAX_PASSAGES`).
+
+Every default is measured on the benchmark corpus, not chosen. `mise
+bench:tokens` reports firing rate, false-fire rate on off-topic prompts, and how
+often the injected set actually contains the answer — re-calibrate per corpus.
+
+**The score `knn_chunks` returns is a true cosine, and that is load-bearing.**
+It used to be `1/(1 + L2 distance)`: monotonic in cosine, so ranking was
+correct, but not a similarity — it compresses the scale toward 0.5, which
+shrank the on-topic/off-topic separation on the benchmark corpus from 0.054 to
+0.014 and silently applied thresholds to the wrong axis. Chunk embeddings are
+normalised at index time and Ollama returns unit vectors, so `cos = 1 - L2²/2`
+inverts exactly. Note the Qdrant backend returns its own metric: a threshold
+calibrated on vec0 does not transfer to it unmatched.
+
+Every failure path is silent-and-exit-0 by design: this runs synchronously in
+the user's critical path.
 
 ## MCP tools exposed
 

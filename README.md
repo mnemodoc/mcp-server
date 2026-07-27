@@ -195,9 +195,56 @@ mnemodoc-server status                                                     # Ind
 mnemodoc-server delete <path>                                              # Remove from index
 mnemodoc-server context [--files <path>]... [--task <kind>] [--query "<text>"] # Resolve & print the role to adopt
 mnemodoc-server info                                                       # Version info
+mnemodoc-server prompt-hook                                                # Client hook: inject the best passage for a prompt (stdin)
 mnemodoc-server daemon status                                              # Is this project's daemon running?
 mnemodoc-server daemon stop [--timeout 10]                                 # Stop it gracefully
 ```
+
+### Injecting documentation before the agent asks
+
+`query_documents` only fires if the agent decides to call it. `prompt-hook`
+removes that dependency: wired to `UserPromptSubmit`, it searches the index
+against the user's message and injects the single best passage — whether or not
+the agent thinks to look.
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command",
+                    "command": "mnemodoc-server prompt-hook --config /path/to/.mnemodoc.yml" }] }
+    ]
+  }
+}
+```
+
+**It stays silent unless the prompt measurably concerns this corpus.** The gate
+is the cosine similarity of the best passage against
+`hook.similarity_threshold` (default `0.515`) — not the search score, which is a
+rank artifact that looks the same for an off-topic query as for a targeted one.
+Below the threshold, on unparseable input, with Ollama down, on an empty index
+or a missing config: it prints nothing and exits 0. A hook that errors in front
+of the user on an unrelated turn is worse than one that says nothing.
+
+**How many passages it injects adapts to how sure the ranking is.** When the
+runner-up sits within `hook.margin_threshold` (default `0.02`) of the best
+passage, the ordering is not decisive, so the contenders go over together — up
+to `hook.max_passages` (default `3`). A decisive lead sends one.
+
+That rule is measured, not guessed. Always injecting one passage is right 83.3 %
+of the time on the benchmark corpus; always injecting three is right 94.4 %.
+Widening only on a thin margin reaches the same 94.4 % while widening on 6
+prompts out of 18 — **1.67 passages and 108 tokens on average**, against a 1411
+token corpus. It works even though decisive and undecided cases overlap, because
+widening a case that was already right costs tokens and never accuracy.
+
+The default threshold is measured, not chosen: on the benchmark corpus the 18
+project questions scored 0.542 and above for their best passage, while 8
+off-topic prompts peaked at 0.488. That 0.054 margin is thin, so treat 0.5 as a
+defensible starting point and re-calibrate for your own corpus — `mise
+bench:tokens` reports the firing rate on real questions **and** the false-fire
+rate on off-topic prompts, which is the half of the calibration a threshold
+tuned only on real questions never sees.
 
 ### Machine-readable output
 

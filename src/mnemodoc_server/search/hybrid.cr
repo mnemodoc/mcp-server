@@ -1,11 +1,22 @@
 module MnemodocServer
   module Search
     # A scored chunk returned to callers, after fusion and recency boosting.
+    #
+    # `score` is the fused RRF value: it orders results but carries no absolute
+    # meaning — the top hit of an off-topic query scores like the top hit of a
+    # perfectly targeted one. `similarity` is the cosine against the query
+    # vector — a real one: `knn_chunks` converts vec0's L2 distance back with
+    # `cos = 1 - L2²/2`, exact because both sides are unit vectors. It *is*
+    # comparable across queries, and is what a caller needs
+    # to decide whether a prompt concerns this corpus at all (the prompt hook).
+    # It is nil for a chunk surfaced by the lexical signal alone: that chunk was
+    # never scored against the query vector, so it must not clear a threshold.
     struct SearchResult
       getter chunk : Chunk
       getter score : Float64
+      getter similarity : Float64?
 
-      def initialize(@chunk, @score)
+      def initialize(@chunk, @score, @similarity = nil)
       end
     end
 
@@ -53,7 +64,9 @@ module MnemodocServer
 
         Log.debug { "fusion: semantic=#{semantic_results.size} chunks, keyword=#{keyword_file_ranks.size} files" }
 
-        scores = {} of String => {chunk: Chunk, rrf: Float64}
+        # similarity rides alongside the fused score: RRF still orders, cosine
+        # only travels with the result so callers can judge absolute relevance.
+        scores = {} of String => {chunk: Chunk, rrf: Float64, similarity: Float64?}
         accumulate_semantic(scores, semantic_results)
         unless keyword_file_ranks.empty?
           accumulate_keyword(scores, keyword_file_ranks, keyword_chunks.group_by(&.file_path))
@@ -61,7 +74,7 @@ module MnemodocServer
 
         cutoff = recency_cutoff
         results = scores.values.map do |entry|
-          SearchResult.new(entry[:chunk], apply_recency(entry[:rrf], entry[:chunk].mtime, cutoff))
+          SearchResult.new(entry[:chunk], apply_recency(entry[:rrf], entry[:chunk].mtime, cutoff), entry[:similarity])
         end
 
         top = results.sort_by! { |result| -result.score }.first(@config.top_k)
@@ -87,14 +100,14 @@ module MnemodocServer
 
       # Adds the semantic RRF contribution (weight 1.0) per chunk.
       private def accumulate_semantic(
-        scores : Hash(String, NamedTuple(chunk: Chunk, rrf: Float64)),
+        scores : Hash(String, NamedTuple(chunk: Chunk, rrf: Float64, similarity: Float64?)),
         semantic_results : Array(NamedTuple(chunk: Chunk, score: Float64, rank: Int32)),
       ) : Nil
         semantic_results.each do |sem_result|
           key = "#{sem_result[:chunk].file_path}::#{sem_result[:chunk].heading}"
           current = scores[key]?.try(&.[:rrf]) || 0.0
           contribution = rrf_score(sem_result[:rank])
-          scores[key] = {chunk: sem_result[:chunk], rrf: current + contribution}
+          scores[key] = {chunk: sem_result[:chunk], rrf: current + contribution, similarity: sem_result[:score]}
           Log.debug { "semantic #{key} rank=#{sem_result[:rank]} +#{contribution.round(5)}" }
         end
       end
@@ -105,7 +118,7 @@ module MnemodocServer
       # file's chunks, preventing large files from dominating the top-k purely
       # by having many chunks.
       private def accumulate_keyword(
-        scores : Hash(String, NamedTuple(chunk: Chunk, rrf: Float64)),
+        scores : Hash(String, NamedTuple(chunk: Chunk, rrf: Float64, similarity: Float64?)),
         keyword_file_ranks : Hash(String, Int32),
         chunks_by_file : Hash(String, Array(Chunk)),
       ) : Nil
@@ -115,8 +128,12 @@ module MnemodocServer
           per_chunk = (@config.keyword_weight * rrf_score(rank)) / file_chunks.size
           file_chunks.each do |chunk|
             key = "#{chunk.file_path}::#{chunk.heading}"
-            current = scores[key]?.try(&.[:rrf]) || 0.0
-            scores[key] = {chunk: chunk, rrf: current + per_chunk}
+            existing = scores[key]?
+            current = existing.try(&.[:rrf]) || 0.0
+            # Never invent a similarity here: a chunk the semantic signal did
+            # not score keeps nil, so it cannot clear a threshold on lexical
+            # evidence alone.
+            scores[key] = {chunk: chunk, rrf: current + per_chunk, similarity: existing.try(&.[:similarity])}
           end
           Log.debug { "keyword #{path} rank=#{rank} per_chunk=#{per_chunk.round(5)} over #{file_chunks.size} chunks" }
         end

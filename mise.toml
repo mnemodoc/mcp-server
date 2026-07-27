@@ -63,9 +63,14 @@ run = "crystal spec {{vars.SPEC_OPTS}}"
 description = "Generate project documentation"
 run = "rm -rf docs && crystal doc"
 
+# ameba can spin at 100% CPU indefinitely on some inputs, so the task carries its
+# own bound: the analysis is killed after 180s and the task fails with exit 124
+# instead of running for hours unnoticed. Never call `bin/ameba` directly.
+# `timeout` is GNU coreutils: present on the CI Linux runners, requires
+# `brew install coreutils` on macOS.
 [tasks."dev:ameba"]
 description = "Run static code analysis"
-run = "bin/ameba"
+run = "timeout 180 bin/ameba"
 
 [tasks."dev:check"]
 description = "Build, lint and test in one shot"
@@ -80,9 +85,10 @@ run = "crystal run --threads 4 bench/bench.cr --"
 
 [tasks."dev:format"]
 description = "Format code"
-# bench/ is included because ameba (no config, no path argument) already
-# inspects it; formatting only src/ would leave it linted but never formatted.
-run = "crystal tool format src/ bench/"
+# ameba (no config, no path argument) inspects everything but lib/, so every
+# directory it lints must also be formatted here — otherwise a file is held to
+# the formatter's rules without ever being run through it.
+run = "crystal tool format src/ spec/ bench/"
 
 [tasks."dev:licenses"]
 description = "Assemble the licenses/ folder baked into the binary"

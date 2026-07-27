@@ -199,7 +199,12 @@ Spectator.describe "CLI machine output" do
         expect(payload["query"].as_s).to eq("body")
         expect(payload["mode"].as_s).not_to be_empty
         first = payload["results"].as_a.first
-        expect(first.as_h.keys.sort!).to eq(["content", "file", "heading", "parent_heading", "score"])
+        # A superset, not an exact match: the payload contract is additive, so
+        # asserting equality here would forbid the very additions it allows.
+        # What must hold is that the query_documents vocabulary is all present.
+        %w[file heading parent_heading content score].each do |key|
+          expect(first.as_h.has_key?(key)).to be_true
+        end
         expect(first["content"].as_s).to contain("Some body text")
       end
     end
