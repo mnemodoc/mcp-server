@@ -508,4 +508,71 @@ Spectator.describe MnemodocServer::Config do
       end
     end
   end
+
+  # validate! exists so a bad configuration is reported once, in full, before
+  # anything runs. Every bound missing from it is a value that reaches the code
+  # unchecked and fails somewhere far less legible — or, worse, does not fail.
+  describe "validation bounds" do
+    it "rejects a top_k below 1" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nsearch:\n  top_k: 0")
+      expect { config.validate! }.to raise_error(ArgumentError, /top_k/)
+    end
+
+    it "rejects a batch_size below 1" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nollama:\n  batch_size: 0")
+      expect { config.validate! }.to raise_error(ArgumentError, /batch_size/)
+    end
+
+    it "rejects a non-positive ollama timeout" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nollama:\n  timeout: 0")
+      expect { config.validate! }.to raise_error(ArgumentError, /timeout/)
+    end
+
+    it "rejects negative recency and weight settings" do
+      config = MnemodocServer::Config.from_yaml(
+        "paths:\n  - doc/\nsearch:\n  recency_days: -1\n  recency_boost: -0.5\n  keyword_weight: -2.0")
+      expect { config.validate! }.to raise_error(ArgumentError, /recency_days.*recency_boost.*keyword_weight/)
+    end
+
+    it "rejects a role declared without a file" do
+      config = MnemodocServer::Config.from_yaml(
+        "paths:\n  - doc/\ncontext:\n  roles:\n    - description: sans fichier")
+      expect { config.validate! }.to raise_error(ArgumentError, /context.roles/)
+    end
+  end
+
+  # A malformed environment override used to raise straight out of apply_env!,
+  # before validate! ever ran: instead of the aggregated report the user gets a
+  # raw Crystal backtrace, and an MCP client just sees the server fail to start.
+  describe "malformed environment overrides" do
+    it "reports a non-numeric override through validate! instead of raising" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/")
+      expect { config.apply_env!({"MNEMODOC_SEARCH_TOP_K" => "abc"}) }.not_to raise_error
+      expect { config.validate! }.to raise_error(ArgumentError, /MNEMODOC_SEARCH_TOP_K/)
+    end
+
+    it "leaves the previous value in place when an override is unusable" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nsearch:\n  top_k: 7")
+      config.apply_env!({"MNEMODOC_SEARCH_TOP_K" => "abc"})
+      expect(config.search.top_k).to eq(7)
+    end
+
+    it "accepts the usual spellings of a boolean, whatever the case" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/")
+      config.apply_env!({"MNEMODOC_INDEX_PDF" => "TRUE"})
+      expect(config.index.pdf?).to be_true
+      config.apply_env!({"MNEMODOC_INDEX_PDF" => "no"})
+      expect(config.index.pdf?).to be_false
+    end
+  end
+
+  # `~` means "home" at the start of a path and nowhere else: a directory
+  # legitimately named "proj~backup" was rewritten into an invented tree, which
+  # prepare_index_dir! then created.
+  describe "db path expansion" do
+    it "expands a leading tilde only" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\ndb:\n  path: /var/tmp/proj~backup/index.db")
+      expect(config.db_path).to eq("/var/tmp/proj~backup/index.db")
+    end
+  end
 end

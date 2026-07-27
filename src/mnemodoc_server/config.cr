@@ -176,38 +176,81 @@ module MnemodocServer
     property hook : HookConfig = HookConfig.from_yaml("")
     property qdrant : QdrantConfig = QdrantConfig.from_yaml("")
 
+    # Environment overrides that could not be read, collected here instead of
+    # raising on the spot so validate! can report them with everything else.
+    @[YAML::Field(ignore: true)]
+    getter env_errors : Array(String) = [] of String
+
+    # Reads an integer override, or records why it could not be used. A raise
+    # here would land in the middle of init_app!, BEFORE validate! runs, and
+    # reach the user as a bare Crystal backtrace — or, through an MCP client,
+    # as a server that simply fails to start.
+    private def env_int(env : Hash(String, String), key : String, & : Int32 -> Nil) : Nil
+      raw = env[key]?
+      return unless raw
+      if value = raw.to_i?
+        yield value
+      else
+        @env_errors << "#{key} is not an integer (got #{raw.inspect})"
+      end
+    end
+
+    private def env_float(env : Hash(String, String), key : String, & : Float64 -> Nil) : Nil
+      raw = env[key]?
+      return unless raw
+      if value = raw.to_f?
+        yield value
+      else
+        @env_errors << "#{key} is not a number (got #{raw.inspect})"
+      end
+    end
+
+    # Accepts the spellings people actually write, in any case, and says so when
+    # the value is none of them rather than silently reading it as false.
+    private def env_bool(env : Hash(String, String), key : String, & : Bool -> Nil) : Nil
+      raw = env[key]?
+      return unless raw
+      case raw.downcase
+      when "true", "1", "yes", "on"  then yield true
+      when "false", "0", "no", "off" then yield false
+      else
+        @env_errors << "#{key} is not a boolean (got #{raw.inspect})"
+      end
+    end
+
     # Overrides selected fields from MNEMODOC_* environment variables, letting
     # deployments tweak settings without editing the YAML file.
     def apply_env!(env : Hash(String, String) = ENV.to_h) : Nil
+      @env_errors.clear
       env["MNEMODOC_OLLAMA_HOST"]?.try { |v| @ollama.host = v }
       env["MNEMODOC_OLLAMA_MODEL"]?.try { |v| @ollama.model = v }
-      env["MNEMODOC_OLLAMA_TIMEOUT"]?.try { |v| @ollama.timeout = v.to_i }
-      env["MNEMODOC_OLLAMA_BATCH_SIZE"]?.try { |v| @ollama.batch_size = v.to_i }
-      env["MNEMODOC_SEARCH_TOP_K"]?.try { |v| @search.top_k = v.to_i }
+      env_int(env, "MNEMODOC_OLLAMA_TIMEOUT") { |v| @ollama.timeout = v }
+      env_int(env, "MNEMODOC_OLLAMA_BATCH_SIZE") { |v| @ollama.batch_size = v }
+      env_int(env, "MNEMODOC_SEARCH_TOP_K") { |v| @search.top_k = v }
       env["MNEMODOC_SEARCH_MODE"]?.try { |v| @search.mode = v }
       env["MNEMODOC_SEARCH_BACKEND"]?.try { |v| @search.backend = v }
       env["MNEMODOC_QDRANT_URL"]?.try { |v| @qdrant.url = v }
       env["MNEMODOC_QDRANT_API_KEY"]?.try { |v| @qdrant.api_key = v }
       env["MNEMODOC_QDRANT_COLLECTION"]?.try { |v| @qdrant.collection = v }
-      env["MNEMODOC_SEARCH_RECENCY_DAYS"]?.try { |v| @search.recency_days = v.to_i }
-      env["MNEMODOC_SEARCH_RECENCY_BOOST"]?.try { |v| @search.recency_boost = v.to_f }
-      env["MNEMODOC_HOOK_THRESHOLD"]?.try { |v| @hook.similarity_threshold = v.to_f }
-      env["MNEMODOC_HOOK_MARGIN"]?.try { |v| @hook.margin_threshold = v.to_f }
-      env["MNEMODOC_HOOK_MAX_PASSAGES"]?.try { |v| @hook.max_passages = v.to_i }
-      env["MNEMODOC_SEARCH_KEYWORD_WEIGHT"]?.try { |v| @search.keyword_weight = v.to_f }
+      env_int(env, "MNEMODOC_SEARCH_RECENCY_DAYS") { |v| @search.recency_days = v }
+      env_float(env, "MNEMODOC_SEARCH_RECENCY_BOOST") { |v| @search.recency_boost = v }
+      env_float(env, "MNEMODOC_HOOK_THRESHOLD") { |v| @hook.similarity_threshold = v }
+      env_float(env, "MNEMODOC_HOOK_MARGIN") { |v| @hook.margin_threshold = v }
+      env_int(env, "MNEMODOC_HOOK_MAX_PASSAGES") { |v| @hook.max_passages = v }
+      env_float(env, "MNEMODOC_SEARCH_KEYWORD_WEIGHT") { |v| @search.keyword_weight = v }
       env["MNEMODOC_SERVER_SSE_HOST"]?.try { |v| @server.sse_host = v }
-      env["MNEMODOC_SERVER_SSE_PORT"]?.try { |v| @server.sse_port = v.to_i }
+      env_int(env, "MNEMODOC_SERVER_SSE_PORT") { |v| @server.sse_port = v }
       env["MNEMODOC_SERVER_LOG_FILE"]?.try { |v| @server.log_file = v }
       env["MNEMODOC_SERVER_LOG_LEVEL"]?.try { |v| @server.log_level = v }
-      env["MNEMODOC_SERVER_DAEMON"]?.try { |v| @server.daemon = v.downcase == "true" }
-      env["MNEMODOC_SERVER_IDLE_TIMEOUT"]?.try { |v| v.to_i?.try { |secs| @server.daemon_idle_timeout = secs } }
-      env["MNEMODOC_SERVER_DAEMON_WATCH"]?.try { |v| @server.daemon_watch = v.downcase == "true" }
-      env["MNEMODOC_SERVER_WATCH_INTERVAL"]?.try { |v| v.to_i?.try { |secs| @server.daemon_watch_interval = secs } }
+      env_bool(env, "MNEMODOC_SERVER_DAEMON") { |v| @server.daemon = v }
+      env_int(env, "MNEMODOC_SERVER_IDLE_TIMEOUT") { |v| @server.daemon_idle_timeout = v }
+      env_bool(env, "MNEMODOC_SERVER_DAEMON_WATCH") { |v| @server.daemon_watch = v }
+      env_int(env, "MNEMODOC_SERVER_WATCH_INTERVAL") { |v| @server.daemon_watch_interval = v }
       env["MNEMODOC_DB_PATH"]?.try { |v| @db.path = v }
-      env["MNEMODOC_INDEX_CONCURRENCY"]?.try { |v| @index.concurrency = v.to_i }
-      env["MNEMODOC_INDEX_PDF"]?.try { |v| @index.pdf = v == "true" }
-      env["MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES"]?.try { |v| @chunking.strip_link_only_lines = v.downcase == "true" }
-      env["MNEMODOC_CHUNKING_MERGE_PREAMBLE"]?.try { |v| @chunking.merge_preamble_into_first_section = v.downcase == "true" }
+      env_int(env, "MNEMODOC_INDEX_CONCURRENCY") { |v| @index.concurrency = v }
+      env_bool(env, "MNEMODOC_INDEX_PDF") { |v| @index.pdf = v }
+      env_bool(env, "MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES") { |v| @chunking.strip_link_only_lines = v }
+      env_bool(env, "MNEMODOC_CHUNKING_MERGE_PREAMBLE") { |v| @chunking.merge_preamble_into_first_section = v }
       env["MNEMODOC_EXCLUDE"]?.try { |v| @exclude = v.split(',').map(&.strip).reject(&.empty?) }
     end
 
@@ -252,7 +295,10 @@ module MnemodocServer
     # lets it survive a rename or a move of the project directory.
     def db_path : String
       return auto_db_path if @db.path.empty?
-      File.expand_path(@db.path.gsub("~", Path.home.to_s))
+      # Only a LEADING tilde means home. Replacing every occurrence rewrote a
+      # directory legitimately named "proj~backup" into an invented tree, which
+      # prepare_index_dir! then obligingly created.
+      Path[@db.path].expand(home: true).to_s
     end
 
     # Path to the Unix domain socket used by the per-project daemon. Lives beside
@@ -328,6 +374,16 @@ module MnemodocServer
       errors << "hook.margin_threshold must be between 0 and 1" unless (0.0..1.0).includes?(@hook.margin_threshold)
       errors << "hook.max_passages must be >= 1" unless @hook.max_passages >= 1
       errors << "index.concurrency must be >= 1" unless @index.concurrency >= 1
+      errors << "search.top_k must be >= 1" unless @search.top_k >= 1
+      errors << "ollama.batch_size must be >= 1" unless @ollama.batch_size >= 1
+      errors << "ollama.timeout must be >= 1" unless @ollama.timeout >= 1
+      errors << "search.recency_days must be >= 0" unless @search.recency_days >= 0
+      errors << "search.recency_boost must be >= 0" unless @search.recency_boost >= 0
+      errors << "search.keyword_weight must be >= 0" unless @search.keyword_weight >= 0
+      @context.roles.each_with_index do |role, index|
+        errors << "context.roles[#{index}].file must not be empty" if role.file.strip.empty?
+      end
+      errors.concat(@env_errors)
       begin
         ::Log::Severity.parse(@server.log_level)
       rescue ArgumentError
