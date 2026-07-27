@@ -69,6 +69,30 @@ Spectator.describe MnemodocServer::Indexer::Format::Markdown do
     expect(chunks[1].content).to eq("Content B.")
   end
 
+  # A leading `---` is a horizontal rule as often as it is a frontmatter fence.
+  # Treating every one of them as a fence deleted everything up to the next
+  # `---`, which for a document that opens on a rule is its whole introduction.
+  it "keeps content opening on a horizontal rule" do
+    chunks = chunks_for(<<-MD)
+    ---
+
+    Intro paragraph that matters.
+
+    ---
+
+    ## Section A
+
+    Content A.
+    MD
+
+    expect(chunks.map(&.content).join("\n")).to contain("Intro paragraph that matters.")
+  end
+
+  it "keeps content when the opening fence is not exactly three dashes" do
+    chunks = chunks_for("----\n\nStill prose.\n\n----\n\n## S\n\nBody.")
+    expect(chunks.map(&.content).join("\n")).to contain("Still prose.")
+  end
+
   it "indexes .mdx through the same path" do
     File.write(tmp, "## H\n\n<Component/> text")
     chunks = handler.extract(tmp, mtime: 1_i64)

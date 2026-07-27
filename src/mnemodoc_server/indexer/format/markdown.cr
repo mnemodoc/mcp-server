@@ -45,11 +45,24 @@ module MnemodocServer
         # single line — headings stop being headings and words from adjacent
         # lines run together, silently, for every file carrying frontmatter.
         private def strip_frontmatter(content : String) : String
-          return content unless content.starts_with?("---")
           lines = content.lines
+          return content unless lines.first?.try(&.strip) == "---"
           end_idx = lines.index(1) { |line| line.strip == "---" }
           return content unless end_idx
+          return content unless frontmatter?(lines[1...end_idx].join("\n"))
           lines[(end_idx + 1)..].join("\n")
+        end
+
+        # Tells a frontmatter block from the prose between two horizontal rules.
+        # Both open the document with `---`, and only one of them is metadata to
+        # drop: frontmatter is YAML, and specifically a mapping, where prose
+        # parses as a plain scalar or not at all. An empty block counts, since
+        # `---` immediately followed by `---` carries no prose to lose.
+        private def frontmatter?(block : String) : Bool
+          return true if block.blank?
+          !YAML.parse(block).as_h?.nil?
+        rescue YAML::ParseException
+          false
         end
       end
     end
