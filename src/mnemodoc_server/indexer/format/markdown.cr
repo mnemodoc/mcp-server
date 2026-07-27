@@ -39,12 +39,17 @@ module MnemodocServer
         end
 
         # Drops a leading YAML frontmatter block delimited by `---` lines.
+        #
+        # The rejoin has to name its separator: `String#lines` chomps, so
+        # joining the remainder without one welds the whole document into a
+        # single line — headings stop being headings and words from adjacent
+        # lines run together, silently, for every file carrying frontmatter.
         private def strip_frontmatter(content : String) : String
           return content unless content.starts_with?("---")
           lines = content.lines
           end_idx = lines.index(1) { |line| line.strip == "---" }
           return content unless end_idx
-          lines[(end_idx + 1)..].join
+          lines[(end_idx + 1)..].join("\n")
         end
       end
     end

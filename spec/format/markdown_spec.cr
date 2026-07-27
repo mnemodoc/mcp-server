@@ -43,6 +43,32 @@ Spectator.describe MnemodocServer::Indexer::Format::Markdown do
     expect(chunks.first.content).to contain("Real content")
   end
 
+  # The assertions above hold even when the document is returned as one glued
+  # line, which is how stripping the frontmatter used to leave it: `String#lines`
+  # drops the newlines, so rejoining without a separator welds every line
+  # together. Structure is what catches that, not substring presence.
+  it "keeps the document's line structure after stripping frontmatter" do
+    chunks = chunks_for(<<-MD)
+    ---
+    title: My Doc
+    ---
+
+    ## Section A
+
+    Content A.
+
+    ## Section B
+
+    Content B.
+    MD
+
+    expect(chunks.size).to eq(2)
+    expect(chunks[0].heading).to eq("## Section A")
+    expect(chunks[0].content).to eq("Content A.")
+    expect(chunks[1].heading).to eq("## Section B")
+    expect(chunks[1].content).to eq("Content B.")
+  end
+
   it "indexes .mdx through the same path" do
     File.write(tmp, "## H\n\n<Component/> text")
     chunks = handler.extract(tmp, mtime: 1_i64)
