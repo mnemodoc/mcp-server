@@ -378,7 +378,12 @@ module MnemodocServer
   end
 end
 
-unless Crystal.env.test?
+# This file doubles as the entry point and as the library root, so the CLI must
+# only run when it is actually the program. Specs get that for free via
+# crystal-env/spec; anything else that requires this file as a library — the
+# bench/ harness — sets MNEMODOC_NO_CLI, otherwise the application's argument
+# parser would consume the caller's own ARGV and exit before it ran.
+unless Crystal.env.test? || ENV.has_key?("MNEMODOC_NO_CLI")
   begin
     MnemodocServer::CLI.run
   rescue e : Exception

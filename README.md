@@ -237,7 +237,7 @@ $ mnemodoc-server search "retry policy" --json | jq -r '.results[0].content'
 
 ## Behaviour notes
 
-**Per-project daemon with auto-spawning proxy** — by default (`server.daemon: true`), `serve --stdio` does not serve MCP directly. It acts as a thin proxy to a per-project background daemon that owns the SQLite index. On the first connection the proxy spawns the daemon automatically and waits for it (up to 30 s). Subsequent `serve --stdio` sessions from any client (Zed, Claude Code, parallel agent sessions) all connect to the same daemon; only one process ever touches the index, eliminating concurrent-write and duplicate-indexing races. The daemon exits automatically after `server.daemon_idle_timeout` seconds of inactivity (default 600 s / 10 min) and is re-spawned on the next request. The socket and lock file live beside the index DB (`daemon.sock`, `daemon.lock`). No client configuration changes are needed — clients still launch `serve --stdio` exactly as before. If the daemon dies mid-session the proxy self-heals (re-spawns under a file lock, ≤ 3 attempts); on exhaustion it falls back to an in-process standalone handler for the rest of that session — no re-indexing, serving the existing on-disk index only. Set `server.daemon: false` to opt out and revert to the standalone stdio server.
+**Per-project daemon with auto-spawning proxy** — by default (`server.daemon: true`), `serve --stdio` does not serve MCP directly. It acts as a thin proxy to a per-project background daemon that owns the SQLite index. On the first connection the proxy spawns the daemon automatically and waits for it (up to 30 s). Subsequent `serve --stdio` sessions from any client (Zed, Claude Code, parallel agent sessions) all connect to the same daemon; only one process ever touches the index, eliminating concurrent-write and duplicate-indexing races. The daemon exits automatically after `server.daemon_idle_timeout` seconds of inactivity (default 600 s / 10 min) and is re-spawned on the next request. The socket, lock and pid files live beside the index DB (`daemon.sock`, `daemon.lock`, `daemon.pid`); `daemon status` and `daemon stop` drive the daemon from the CLI. No client configuration changes are needed — clients still launch `serve --stdio` exactly as before. If the daemon dies mid-session the proxy self-heals (re-spawns under a file lock, ≤ 3 attempts); on exhaustion it falls back to an in-process standalone handler for the rest of that session — no re-indexing, serving the existing on-disk index only. Set `server.daemon: false` to opt out and revert to the standalone stdio server.
 
 **Live re-indexing (daemon)** — while the daemon runs it watches the configured `paths` and re-indexes a document within ~1 s of it being created, modified, or deleted (polling, via the `file_watcher` shard). Enabled by default (`server.daemon_watch: true`); tune the cadence with `server.daemon_watch_interval` (seconds) or set `daemon_watch: false` to keep boot-time indexing only. Only the daemon watches; the standalone stdio fallback does not.
 
@@ -392,6 +392,46 @@ mise dev:check   # build + lint + test
 ```
 
 See [CLAUDE.md](CLAUDE.md) for full development guide.
+
+### Measuring what it saves
+
+`mise bench:tokens` quantifies the project's central claim: that fetching
+relevant passages on demand costs less than loading the whole documentation set
+at every session start.
+
+```
+Unit          : exact (count_tokens, model claude-opus-5)
+Baseline      : 1411 (whole corpus, loaded every session)
+Retrieved     : mean 302.8, median 314.5 (top-5)
+Saving        : 78.5 %
+Recall        : 94.4 % of 18 questions
+```
+
+**A saving is never reported without its recall**, because it would be
+meaningless: returning nothing is a 100 % saving and a total failure. The
+harness runs a hand-annotated question set — each question names the file and
+heading that holds its answer — and measures whether the search returns that
+passage in the top-K. A run whose recall is zero is printed as **not
+meaningful** and exits non-zero, so no script can mistake it for a good result.
+
+It runs against a fixture corpus committed under `bench/corpus/`, not against
+real documentation: absolute figures from an artificial corpus mean little, but
+their *evolution between versions* is comparable, which is what makes the
+harness useful as a regression guard.
+
+Counting uses Anthropic's `count_tokens` endpoint, which is free and
+rate-limited separately from message creation. Put `ANTHROPIC_API_KEY` in a
+git-ignored `.env` (mise loads it) for exact token counts. Without a key the
+harness still runs, counting characters instead and saying so in its output —
+ratios stay meaningful, absolute values are not tokens. Ollama is required
+either way, since the corpus has to be embedded before it can be searched.
+
+```sh
+mise bench:tokens                       # human-readable report
+mise bench:tokens -- --json             # machine-readable
+mise bench:tokens -- --top-k 3          # fewer passages per question
+mise bench:tokens -- --model claude-sonnet-5   # another tokenizer
+```
 
 ## Alternatives
 

@@ -1,0 +1,84 @@
+# Annotated question set for the token benchmark.
+#
+# Each entry names the file and heading that actually holds the answer. The
+# harness measures whether the search returns that passage in its top-K — the
+# recall figure that a cost saving is meaningless without.
+#
+# Questions are written the way a user would ask them, deliberately avoiding
+# the wording of the passage itself: a question that copies its answer's
+# vocabulary measures lexical overlap, not retrieval.
+#
+# `bench_questions_spec` fails if any file or heading below stops existing, so
+# a corpus edit cannot silently turn recall into a measure of nothing.
+
+- question: How do I undo a bad release?
+  expected_file: deployment.md
+  expected_heading: Rolling back a release
+
+- question: What do I do to rotate logs without dropping lines?
+  expected_file: deployment.md
+  expected_heading: Log rotation
+
+- question: Is the binary self-contained or does it need libraries installed?
+  expected_file: deployment.md
+  expected_heading: Building a release
+
+- question: Does re-running the indexer over unchanged files cost anything?
+  expected_file: indexing.md
+  expected_heading: Incremental re-indexing
+
+- question: What happens when the embedding service refuses a chunk?
+  expected_file: indexing.md
+  expected_heading: Handling embedding failures
+
+- question: How do I keep a directory out of the index?
+  expected_file: indexing.md
+  expected_heading: Excluding paths
+
+- question: How are the two search signals combined into one ordering?
+  expected_file: search.md
+  expected_heading: How results are ranked
+
+- question: Can I search when the embedding service is down?
+  expected_file: search.md
+  expected_heading: Keyword-only and semantic-only modes
+
+- question: My query came back empty, where do I start looking?
+  expected_file: search.md
+  expected_heading: Why a query returns nothing
+
+- question: Do newer documents get any preference in the results?
+  expected_file: search.md
+  expected_heading: Recency bias
+
+- question: Where does the database file end up by default?
+  expected_file: configuration.md
+  expected_heading: Where the index is stored
+
+- question: The project folder is read-only, can I put the database elsewhere?
+  expected_file: configuration.md
+  expected_heading: Overriding the index location
+
+- question: Are paths interpreted from where I run the command?
+  expected_file: configuration.md
+  expected_heading: Relative paths
+
+- question: Can I change a setting without touching the config file?
+  expected_file: configuration.md
+  expected_heading: Environment overrides
+
+- question: Why not just let every client open the database itself?
+  expected_file: daemon.md
+  expected_heading: Why a daemon exists
+
+- question: What happens if nobody talks to it for a long while?
+  expected_file: daemon.md
+  expected_heading: Idle shutdown
+
+- question: Is anything lost if the process dies unexpectedly?
+  expected_file: daemon.md
+  expected_heading: Recovering from a crash
+
+- question: Do edits show up without restarting anything?
+  expected_file: daemon.md
+  expected_heading: Live re-indexing

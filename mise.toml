@@ -1,6 +1,13 @@
 [tools]
 crystal = "1.20.3"
 
+# Local, git-ignored secrets — currently ANTHROPIC_API_KEY, which switches the
+# token benchmark from its character-count approximation to exact counts via the
+# count_tokens endpoint. A missing .env is not an error: every task still runs,
+# the variable is simply unset.
+[env]
+_.file = ".env"
+
 [vars]
 APP_NAME    = "mnemodoc-server"
 SOURCE_FILE = "src/{{vars.APP_NAME}}.cr"
@@ -59,9 +66,22 @@ run = "bin/ameba"
 description = "Build, lint and test in one shot"
 run = "mise dev:build && mise dev:ameba && mise dev:spec"
 
+[tasks."bench:tokens"]
+description = "Measure retrieval cost against loading the whole corpus (needs Ollama; ANTHROPIC_API_KEY in .env for exact token counts)"
+# Same dependencies as dev:build: the harness links the vec0 objects and bakes
+# the licenses folder, because it requires the application itself.
+depends = ["dev:vec0-objects", "dev:licenses"]
+# MNEMODOC_NO_CLI keeps the application's argument parser from consuming the
+# harness's own flags: src/mnemodoc-server.cr is both entry point and library
+# root, and running it as a library must not start the CLI.
+env = { MNEMODOC_NO_CLI = "1" }
+run = "crystal run --threads 4 bench/bench.cr --"
+
 [tasks."dev:format"]
 description = "Format code"
-run = "crystal tool format src/"
+# bench/ is included because ameba (no config, no path argument) already
+# inspects it; formatting only src/ would leave it linted but never formatted.
+run = "crystal tool format src/ bench/"
 
 [tasks."dev:licenses"]
 description = "Assemble the licenses/ folder baked into the binary"

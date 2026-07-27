@@ -38,7 +38,17 @@ mise dev:format    # format code (crystal tool format src/)
 mise dev:vec0-objects # generate sqlite-vec.h + compile the submodule objects (macOS dev)
 mise dev:build     # compile dev binary to bin/mnemodoc-server (depends on dev:vec0-objects)
 mise dev:check     # build + ameba + spec in one shot
+mise bench:tokens  # measure retrieval cost vs loading the whole corpus (needs Ollama)
 ```
+
+`bench:tokens` lives in `bench/`, outside `src/` so it is never linked into the
+shipped binary. It reports a token saving **and** the recall it was achieved at,
+and refuses to present the two apart: returning nothing is a 100 % saving and a
+total failure, so a zero-recall run prints "not meaningful" and exits non-zero.
+Exact counts come from Anthropic's free `count_tokens` endpoint when
+`ANTHROPIC_API_KEY` is set (mise loads it from a git-ignored `.env`); without a
+key it counts characters and says so. Note `dev:format` covers `src/ bench/` —
+ameba already inspects `bench/`, so formatting only `src/` would let it drift.
 
 `dev:build` depends on `dev:vec0-objects`: the semantic search backend links against the **upstream sqlite-vec submodule** in `ext/sqlite-vec/` (pinned to `v0.1.9`). The task regenerates `sqlite-vec.h` from the template (`envsubst`), then compiles `sqlite-vec.c` (with `-DSQLITE_CORE`) plus our registration shim `vendor/vec0_shim.c` into `.o` objects under `vendor/`, so the vec0 KNN extension is available on every SQLite connection. The `.c` is compiled through a small generated copy (`vendor/sqlite-vec.patched.c`) that strips three non-portable BSD typedefs which break on musl — see the bump note in Deployment. Clone with `git submodule update --init`.
 
@@ -57,6 +67,7 @@ mise release:static   # builds static Linux binaries via docker buildx bake
 The JSON-RPC 2.0 / MCP transport (stdio + HTTP) is **not in this repo**: it lives in the external `mcp` shard (`mnemodoc/mcp.cr`, see `shard.yml`) and is used here as `MCP::Server`, `MCP::Stdio`, `MCP::Http`, `MCP::ToolResult`, and `MCP::ToolAnnotations`.
 
 ```
+bench/                              Token-cost benchmark (bench.cr entry, runner, report, TokenCounter, fixture corpus + annotated questions)
 src/mnemodoc-server.cr              Entry point: init_app!, CLI.run
 src/mnemodoc_server/
   cli.cr                           Admiral CLI — subcommands: serve, index, search, status, delete, context, info, daemon (status/stop); CLIOutput routes each result to --json / text / --quiet
