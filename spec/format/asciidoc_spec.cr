@@ -37,4 +37,13 @@ Spectator.describe MnemodocServer::Indexer::Format::AsciiDoc do
       expect(body).to contain("download the model")
     end
   end
+
+  # A leading equals sign inside a listing block is content, not a heading.
+  it "does not read an equals line inside a listing block as a heading" do
+    File.write(tmp, "= Section\nbody\n----\n= not a heading\necho hi\n----\nafter")
+    chunks = handler.extract(tmp, mtime: 1_i64)
+    expect(chunks.map(&.heading)).to eq(["= Section"])
+    expect(chunks.first.content).to contain("echo hi")
+    expect(chunks.first.content).to contain("after")
+  end
 end

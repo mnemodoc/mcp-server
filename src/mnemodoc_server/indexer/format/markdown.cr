@@ -24,8 +24,16 @@ module MnemodocServer
         # reuse Markdown heading semantics for notebook markdown cells.
         def parse_sections(content : String) : Array(Section)
           sz = Sectionizer.new
+          fence = FenceTracker.markdown
           content.each_line do |line|
             stripped = line.strip
+            # A delimiter, and everything it encloses, is text whatever it looks
+            # like: the markers that open a heading are ordinary characters in a
+            # code sample.
+            if fence.delimiter?(line) || fence.inside?
+              sz.text(line.chomp)
+              next
+            end
             # Level 1 counts as a heading, like Org's `*` and AsciiDoc's `=`.
             # Excluding it dropped the document title into the preamble, which
             # produced a chunk whose whole content was that title line.

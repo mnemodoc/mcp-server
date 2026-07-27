@@ -43,4 +43,13 @@ Spectator.describe MnemodocServer::Indexer::Format::Org do
       expect(body).to contain("API reference")
     end
   end
+
+  # A leading star inside a source block is emphasis or code, not a heading.
+  it "does not read a starred line inside a source block as a heading" do
+    File.write(tmp, "* Section\nbody\n#+BEGIN_SRC sh\n* not a heading\necho hi\n#+END_SRC\nafter")
+    chunks = handler.extract(tmp, mtime: 1_i64)
+    expect(chunks.map(&.heading)).to eq(["* Section"])
+    expect(chunks.first.content).to contain("echo hi")
+    expect(chunks.first.content).to contain("after")
+  end
 end

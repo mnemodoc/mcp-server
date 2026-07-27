@@ -191,4 +191,19 @@ Spectator.describe MnemodocServer::Indexer::Format::Markdown do
       expect(leaf.parent_heading).to eq("## Middle")
     end
   end
+
+  # A comment inside a fenced code block is not a heading. Reading it as one
+  # cut the block in two, left an orphan opening fence in one chunk, and put a
+  # shell comment in the index as a section title.
+  it "does not read a comment inside a fenced block as a heading" do
+    chunks = chunks_for("## Setup\n\nRun this:\n\n```sh\n# Install deps\nmise dev:deps\n```\n\nDone.")
+    expect(chunks.map(&.heading)).to eq(["## Setup"])
+    expect(chunks.first.content).to contain("mise dev:deps")
+    expect(chunks.first.content).to contain("Done.")
+  end
+
+  it "resumes heading detection after the block closes" do
+    chunks = chunks_for("## A\n\n```\n## not a heading\n```\n\n## B\n\nbody b")
+    expect(chunks.map(&.heading)).to eq(["## A", "## B"])
+  end
 end

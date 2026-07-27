@@ -19,8 +19,13 @@ module MnemodocServer
 
         private def parse_sections(content : String) : Array(Section)
           sz = Sectionizer.new
+          fence = FenceTracker.org
           content.each_line do |line|
             stripped = line.strip
+            if fence.delimiter?(line) || fence.inside?
+              sz.text(line.chomp)
+              next
+            end
             if match = stripped.match(/^(\*+)\s+.+/)
               sz.heading(match[1].size, stripped)
             else
