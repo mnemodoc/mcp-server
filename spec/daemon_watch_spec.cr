@@ -31,6 +31,21 @@ Spectator.describe "MnemodocServer daemon watch" do
     end
   end
 
+  # Winds the watcher fiber down and waits for it to actually return. Closing
+  # the signal is not enough on its own: the loop is parked inside the shard's
+  # poll, so it needs one event before it looks at the signal again. Returns
+  # false if the fiber is still running at the deadline.
+  private def wind_down(stop : Channel(Nil), done : Channel(Nil)) : Bool
+    stop.close
+    File.write(File.join(tmp_dir, "wake.md"), "# wake") rescue nil
+    select
+    when done.receive
+      true
+    when timeout(10.seconds)
+      false
+    end
+  end
+
   # Builds the config + collaborators handle_watch_event needs, pointed at the
   # mock Ollama and the temp dir as the only watched path.
   private def harness(port : Int32)
@@ -136,11 +151,40 @@ Spectator.describe "MnemodocServer daemon watch" do
     end
   end
 
+  # Nothing used to stop this loop, which is fine for the daemon — its watcher
+  # dies with the process — but not for a spec: the fiber outlived its example
+  # and kept polling a directory the teardown had deleted, with a store it had
+  # closed, logging DB::PoolRetryAttemptsExceeded (message nil, hence a bare
+  # colon) into the middle of whatever example ran next.
+  it "returns once its stop signal is closed" do
+    with_mock_ollama do |port|
+      h = harness(port)
+      stop = Channel(Nil).new
+      done = Channel(Nil).new
+      begin
+        spawn do
+          MnemodocServer.watch_and_index(h[:config], h[:store], nil, stop: stop)
+          done.send(nil)
+        end
+        Fiber.yield
+        expect(wind_down(stop, done)).to be_true
+      ensure
+        h[:store].close
+        h[:embedder].close
+      end
+    end
+  end
+
   it "live-indexes a newly created file through the real watcher loop" do
     with_mock_ollama do |port|
       h = harness(port)
+      stop = Channel(Nil).new
+      done = Channel(Nil).new
       begin
-        spawn { MnemodocServer.watch_and_index(h[:config], h[:store], nil) }
+        spawn do
+          MnemodocServer.watch_and_index(h[:config], h[:store], nil, stop: stop)
+          done.send(nil)
+        end
         Fiber.yield
         path = File.join(tmp_dir, "live.md")
         File.write(path, "# Live\n\n## S\n\nbody")
@@ -154,6 +198,8 @@ Spectator.describe "MnemodocServer daemon watch" do
         end
         expect(indexed).to be_true
       ensure
+        # Before anything it reads is taken away from it.
+        wind_down(stop, done)
         h[:store].close
         h[:embedder].close
       end

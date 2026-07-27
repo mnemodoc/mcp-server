@@ -233,7 +233,14 @@ module MnemodocServer
   # stat race during atomic editor saves, so a crash is logged and the watch is
   # restarted after a short backoff. Each event is isolated so a bad one never
   # breaks the loop.
-  def self.watch_and_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?) : Nil
+  #
+  # *stop* is a shutdown signal: closing it makes the loop return at its next
+  # poll. The daemon passes nothing — its watcher is meant to die with the
+  # process — but a caller that outlives the store it handed over needs a way to
+  # wind the loop down first, or it keeps polling against a closed store and a
+  # directory that no longer exists.
+  def self.watch_and_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?,
+                           stop : Channel(Nil)? = nil) : Nil
     # Typed as the union the file_watcher shard expects (Enumerable(String | Path)).
     patterns = [] of String | Path
     config.resolved_paths.each do |entry|
@@ -246,19 +253,34 @@ module MnemodocServer
     interval = config.server.daemon_watch_interval.seconds
     Log.info { "watch: live re-index over #{patterns.size} path(s), every #{config.server.daemon_watch_interval}s" }
     loop do
+      break if stop_requested?(stop)
       begin
         FileWatcher.watch(patterns, interval: interval) do |event|
+          # The shard's poll loop has no exit of its own; breaking out of the
+          # block is what returns from it, and the check above then ends the
+          # supervision loop rather than restarting the watch.
+          break if stop_requested?(stop)
           begin
             handle_watch_event(event, config, store, qi, registry, embedder, sf)
           rescue ex
-            Log.error { "watch: failed handling #{event.path}: #{ex.message}" }
+            # The class is part of the message because the exception may carry
+            # none: DB::PoolRetryAttemptsExceeded, raised when the index file is
+            # gone, logs as a bare colon and says nothing about what happened.
+            Log.error { "watch: failed handling #{event.path}: [#{ex.class}] #{ex.message}" }
           end
         end
       rescue ex
-        Log.error { "watch loop crashed, restarting: #{ex.message}" }
+        Log.error { "watch loop crashed, restarting: [#{ex.class}] #{ex.message}" }
         sleep 1.second
       end
     end
+  end
+
+  # True once the caller has closed the shutdown signal. A nil signal means
+  # "run until the process does", which is the daemon's case.
+  private def self.stop_requested?(stop : Channel(Nil)?) : Bool
+    return false unless stop
+    stop.closed?
   end
 
   # Runs the standalone stdio MCP server: opens the store, spawns background
