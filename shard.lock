@@ -1,8 +1,8 @@
 version: 2.0
 shards:
   admiral:
-    git: https://github.com/jwaldrip/admiral.cr.git
-    version: 1.12.1
+    git: https://github.com/n-rodriguez/admiral.cr.git
+    version: 1.12.1+git.commit.06abd22c0d791e85f7661d4a9a82972b7ce683f0
 
   ameba:
     git: https://github.com/crystal-ameba/ameba.git

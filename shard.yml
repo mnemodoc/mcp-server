@@ -18,7 +18,8 @@ dependencies:
     github: mnemodoc/mcp.cr
     version: ~> 1.0
   admiral:
-    github: jwaldrip/admiral.cr
+    github: n-rodriguez/admiral.cr
+    branch: ci/github-actions-mise
   crystal-env:
     github: crystal-lang/crystal-env
     branch: master
