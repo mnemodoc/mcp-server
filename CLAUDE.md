@@ -68,7 +68,8 @@ The JSON-RPC 2.0 / MCP transport (stdio + HTTP) is **not in this repo**: it live
 
 ```
 bench/                              Token-cost benchmark (bench.cr entry, runner, report, TokenCounter, fixture corpus + annotated questions)
-src/mnemodoc-server.cr              Entry point: init_app!, CLI.run
+src/mnemodoc-server.cr              Entry point — nothing but `CLI.run`. Compiled to the binary (`SOURCE_FILE` in mise.toml)
+src/mnemodoc_server.cr              Library root: every require, plus init_app!, open_store, run_transport, serve_stdio/sse, watch_and_index, daemon helpers. Requiring it has **no side effect** — specs and bench/ require this, never the entry point
 src/mnemodoc_server/
   cli.cr                           Admiral CLI — subcommands: serve, index, search, status, delete, context, info, daemon (status/stop); CLIOutput routes each result to --json / text / --quiet
   config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs); daemon_socket_path / daemon_lock_path
@@ -279,7 +280,9 @@ stdio is the default transport (`--sse` switches to HTTP), so `--stdio` is optio
 
 ## Testing
 
-Uses [Spectator](https://gitlab.com/arctic-fox/spectator). Test environment detected via `crystal-env` — `Crystal.env.test?` is true when running specs.
+Uses [Spectator](https://gitlab.com/arctic-fox/spectator). Specs require `src/mnemodoc_server.cr` (the library), never `src/mnemodoc-server.cr` (the entry point) — requiring the latter would run the CLI against the spec runner's own ARGV.
+
+There is no environment-detection shard: `crystal-env` was carried solely so `Crystal.env.test?` could stop the entry point from running its CLI during specs, and the library/entry split removed the need for it.
 
 Key spec files:
 - `spec/config_spec.cr` — YAML parsing, apply_env!, validate!

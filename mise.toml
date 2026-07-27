@@ -76,10 +76,6 @@ description = "Measure retrieval cost against loading the whole corpus (needs Ol
 # Same dependencies as dev:build: the harness links the vec0 objects and bakes
 # the licenses folder, because it requires the application itself.
 depends = ["dev:vec0-objects", "dev:licenses"]
-# MNEMODOC_NO_CLI keeps the application's argument parser from consuming the
-# harness's own flags: src/mnemodoc-server.cr is both entry point and library
-# root, and running it as a library must not start the CLI.
-env = { MNEMODOC_NO_CLI = "1" }
 run = "crystal run --threads 4 bench/bench.cr --"
 
 [tasks."dev:format"]

@@ -1,5 +1,5 @@
 require "file_utils"
-require "../src/mnemodoc-server"
+require "../src/mnemodoc_server"
 require "./questions"
 require "./report"
 require "./token_counter"

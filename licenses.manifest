@@ -1,7 +1,6 @@
 # kind | name | source (on-disk LICENSE path for shards; SPDX id for clib/runtime)
 shard   | mcp               | lib/mcp/LICENSE
 shard   | admiral           | lib/admiral/LICENSE
-shard   | crystal-env       | lib/crystal-env/LICENSE
 shard   | sqlite3           | lib/sqlite3/LICENSE
 shard   | db                | lib/db/LICENSE
 shard   | markd             | lib/markd/LICENSE

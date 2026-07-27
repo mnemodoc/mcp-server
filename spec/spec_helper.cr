@@ -1,12 +1,11 @@
 require "spectator"
-require "crystal-env/spec"
 
 Spectator.configure do |config|
   config.randomize
   config.profile
 end
 
-require "../src/mnemodoc-server"
+require "../src/mnemodoc_server"
 
 def with_env(values : Hash(String, String), &)
   old_values = {} of String => String?
