@@ -199,7 +199,7 @@ Spectator.describe "CLI machine output" do
         expect(payload["query"].as_s).to eq("body")
         expect(payload["mode"].as_s).not_to be_empty
         first = payload["results"].as_a.first
-        expect(first.as_h.keys.sort).to eq(["content", "file", "heading", "parent_heading", "score"])
+        expect(first.as_h.keys.sort!).to eq(["content", "file", "heading", "parent_heading", "score"])
         expect(first["content"].as_s).to contain("Some body text")
       end
     end
