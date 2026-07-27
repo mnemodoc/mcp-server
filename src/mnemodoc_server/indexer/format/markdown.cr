@@ -1,8 +1,8 @@
 module MnemodocServer
   module Indexer
     module Format
-      # Markdown / MDX handler. Splits a document along its ## (level 2) and
-      # ### (level 3) headings, stripping a leading YAML frontmatter block.
+      # Markdown / MDX handler. Splits a document along its #, ## and ###
+      # headings, stripping a leading YAML frontmatter block.
       # MDX flows through unchanged (JSX is treated as text).
       class Markdown < Handler
         # Markdown plus common aliases and Markdown-based document formats
@@ -26,8 +26,11 @@ module MnemodocServer
           sz = Sectionizer.new
           content.each_line do |line|
             stripped = line.strip
-            if match = stripped.match(/^(###|##)\s+.+/)
-              sz.heading(match[1] == "###" ? 3 : 2, stripped)
+            # Level 1 counts as a heading, like Org's `*` and AsciiDoc's `=`.
+            # Excluding it dropped the document title into the preamble, which
+            # produced a chunk whose whole content was that title line.
+            if match = stripped.match(/^(###|##|#)\s+.+/)
+              sz.heading(match[1].size, stripped)
             else
               sz.text(line.chomp)
             end
