@@ -1,0 +1,25 @@
+# Build context allowlist.
+#
+# Everything is excluded, then the exact paths the Dockerfile COPYs are added
+# back. The default direction matters: the whole working directory is sent to
+# the Docker daemon on every build — a daemon that caches the context and may
+# be remote or rootless — so `.env` (which holds ANTHROPIC_API_KEY for the
+# token benchmark) must never be in it, and neither must lib/, bin/ or docs/.
+# A denylist would leak every future file nobody thought to add to it.
+#
+# Adding a COPY to the Dockerfile means adding its path below. Forgetting to
+# fails the build with "no source files were specified" rather than silently
+# shipping an incomplete image.
+*
+
+!.git
+!ext
+!licenses-spdx
+!scripts
+!src
+!vendor
+!LICENSE
+!Makefile.release
+!licenses.manifest
+!shard.lock
+!shard.yml
