@@ -178,4 +178,27 @@ Spectator.describe MnemodocServer::Indexer::ChunkAssembler do
       expect(chunks.any? { |chunk| chunk.heading == "## Real" }).to be_true
     end
   end
+
+  # A heading is a table of contents when that is what it says, not when the
+  # phrase happens to appear somewhere inside it. Matching anywhere threw away
+  # whole sections of real content whose titles merely mentioned the words.
+  describe "table-of-contents filtering" do
+    it "drops a heading that is a table of contents" do
+      sections = [
+        s.new("## Table des matières", nil, "- [Intro](#intro)\n- [Suite](#suite)"),
+        s.new("## Intro", nil, "Le vrai contenu."),
+      ]
+      chunks = assembler.assemble("doc/a.md", sections, "x", mtime: 1_i64)
+      expect(chunks.map(&.heading)).to eq(["## Intro"])
+    end
+
+    it "keeps a section whose heading only mentions the words" do
+      sections = [
+        s.new("## Sommaire exécutif", nil, "Le chiffre d'affaires a doublé."),
+        s.new("## Generating the table of contents", nil, "Run mkdocs build."),
+      ]
+      chunks = assembler.assemble("doc/a.md", sections, "x", mtime: 1_i64)
+      expect(chunks.map(&.content)).to eq(["Le chiffre d'affaires a doublé.", "Run mkdocs build."])
+    end
+  end
 end

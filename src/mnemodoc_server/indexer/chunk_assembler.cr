@@ -215,9 +215,22 @@ module MnemodocServer
         body.each_line.reject { |line| ChunkAssembler.link_only_line?(line, patterns) }.join('\n')
       end
 
+      # Titles that ARE a table of contents, in the markup-free form produced by
+      # the normalisation below.
+      TOC_TITLES = {"table des matières", "table of contents", "sommaire"}
+
       # True for navigational table-of-contents headings (no retrieval value).
+      #
+      # The comparison is anchored on the whole title, once heading markers are
+      # removed, rather than searched inside it: "## Sommaire exécutif" and
+      # "## Generating the table of contents" are ordinary content, and matching
+      # anywhere silently threw away the sections they titled — with no log line
+      # to say a thing had been dropped.
       private def toc_heading?(heading : String) : Bool
-        !(/(table des matières|table of contents|sommaire)/i =~ heading).nil?
+        title = heading.strip.lstrip("#*=").strip.rstrip(":").strip.downcase
+        return false unless TOC_TITLES.includes?(title)
+        Log.debug { "dropping table-of-contents section #{heading.inspect}" }
+        true
       end
     end
   end
