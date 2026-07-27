@@ -328,6 +328,96 @@ module MnemodocServer
       end
     end
 
+    # Inspects and stops the per-project daemon. Both subcommands rely on the
+    # liveness probe rather than the pid file alone: a hard-killed daemon leaves
+    # its pid file behind, and that pid may since have been reused by an
+    # unrelated process.
+    class Daemon < Admiral::Command
+      include CLIErrorHandling
+      define_help description: "Inspect or stop the per-project daemon"
+
+      # Reports whether a daemon is reachable on the project's socket, and with
+      # what pid. Never signals anything.
+      class Status < Admiral::Command
+        include CLIErrorHandling
+        define_help description: "Show whether the project's daemon is running"
+
+        define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+
+        def run
+          MnemodocServer.init_app!(flags.config)
+          config = MnemodocServer.config
+
+          unless config.server.daemon?
+            puts "Daemon mode is disabled (server.daemon: false); `serve --stdio` runs standalone."
+            return
+          end
+
+          puts "Socket: #{config.daemon_socket_path}"
+          unless MnemodocServer.daemon_healthy?(config)
+            puts "Status: not running"
+            return
+          end
+
+          puts "Status: running"
+          pid = MnemodocServer.daemon_pid(config)
+          puts "PID: #{pid || "unknown (pid file missing)"}"
+        rescue ex : File::Error
+          handle_error(ex)
+        end
+      end
+
+      # Stops the daemon with SIGTERM, then waits for the socket to stop
+      # answering. Cleans up stale files instead of signalling when no daemon
+      # is reachable, and never escalates to SIGKILL.
+      class Stop < Admiral::Command
+        include CLIErrorHandling
+        define_help description: "Stop the project's daemon"
+
+        define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+        # ameba:disable Lint/UselessAssign
+        define_flag timeout : Int32, long: "timeout", default: 10, description: "Seconds to wait for the daemon to exit"
+
+        def run
+          MnemodocServer.init_app!(flags.config)
+          config = MnemodocServer.config
+
+          # Probing before signalling is what keeps us from killing an unrelated
+          # process that inherited a dead daemon's pid. The remaining window —
+          # the daemon dying between this probe and the signal — is accepted.
+          unless MnemodocServer.daemon_healthy?(config)
+            File.delete?(config.daemon_socket_path)
+            File.delete?(config.daemon_pid_path)
+            puts "Daemon is not running; cleaned up stale socket and pid file."
+            return
+          end
+
+          pid = MnemodocServer.daemon_pid(config)
+          if pid.nil?
+            handle_error(Exception.new("daemon is running but #{config.daemon_pid_path} is missing; cannot determine its pid"))
+          end
+
+          Process.signal(Signal::TERM, pid)
+          if MnemodocServer.await_daemon_exit(config, flags.timeout.seconds)
+            puts "Daemon stopped (pid #{pid})."
+          else
+            handle_error(Exception.new("daemon (pid #{pid}) did not exit within #{flags.timeout}s; not escalating to SIGKILL"))
+          end
+        rescue ex : File::Error | RuntimeError
+          handle_error(ex)
+        end
+      end
+
+      register_sub_command status, Status, description: "Show whether the project's daemon is running"
+      register_sub_command stop, Stop, description: "Stop the project's daemon"
+
+      # Without this, invoking `daemon` with no subcommand raises Admiral's
+      # bare "Invalid subcommand:" error instead of showing what is available.
+      def run
+        puts help
+      end
+    end
+
     register_sub_command serve, Serve, description: "Start the MCP server"
     register_sub_command index, Index, description: "Index a file or directory"
     register_sub_command search, Search, description: "Search the index"
@@ -335,6 +425,7 @@ module MnemodocServer
     register_sub_command delete, Delete, description: "Remove a file from the index"
     register_sub_command context, Context, description: "Select and print the role for the current context"
     register_sub_command info, Info, description: "Show version and build info"
+    register_sub_command daemon, Daemon, description: "Inspect or stop the per-project daemon"
 
     # Prints the top-level help text when no subcommand is given.
     def run

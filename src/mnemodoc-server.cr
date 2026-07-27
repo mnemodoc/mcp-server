@@ -158,6 +158,42 @@ module MnemodocServer
   # Qdrant. Unsupported extensions are skipped here because a single-file crawler
   # root is treated as explicit and would otherwise fall back to plain text.
   # Wrapped by the caller so one bad event never breaks the watch loop.
+  # True when a daemon is listening on the project's socket and answering the
+  # transport's liveness probe. The single source of truth for "is it running":
+  # the pid file alone cannot say, since a hard kill leaves it behind.
+  def self.daemon_healthy?(config : Config) : Bool
+    socket = UNIXSocket.new(config.daemon_socket_path)
+    client = HTTP::Client.new(socket)
+    begin
+      client.get("/health").status_code == 200
+    ensure
+      client.close
+    end
+  rescue
+    false
+  end
+
+  # The pid recorded by the running daemon, or nil when the file is absent or
+  # does not hold a plain integer. Says nothing about whether that pid is alive:
+  # pair it with daemon_healthy? before acting on it.
+  def self.daemon_pid(config : Config) : Int64?
+    File.read(config.daemon_pid_path).strip.to_i64?
+  rescue File::Error
+    nil
+  end
+
+  # Waits for the daemon's socket to stop answering, which is what tells us the
+  # process is actually gone rather than merely signalled. Returns false when
+  # *timeout* elapses first.
+  def self.await_daemon_exit(config : Config, timeout : Time::Span) : Bool
+    deadline = Time.instant + timeout
+    until Time.instant > deadline
+      return true unless daemon_healthy?(config)
+      sleep 100.milliseconds
+    end
+    !daemon_healthy?(config)
+  end
+
   # True when the path is one of the index's own files rather than a document.
   # Since the index defaults to `.mnemodoc/` inside the project, it sits under
   # the watched paths: the database, its SQLite sidecars and the daemon's socket
@@ -169,7 +205,9 @@ module MnemodocServer
     db = config.db_path
     return true if path == db || path.starts_with?("#{db}-")
 
-    path == config.daemon_socket_path || path == config.daemon_lock_path
+    path == config.daemon_socket_path ||
+      path == config.daemon_lock_path ||
+      path == config.daemon_pid_path
   end
 
   def self.handle_watch_event(event : FileWatcher::Event, config : Config, store : Store::SQLite,

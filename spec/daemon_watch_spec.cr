@@ -90,6 +90,7 @@ Spectator.describe "MnemodocServer daemon watch" do
       expect(MnemodocServer.index_artifact?("#{tmp_db}-journal", config)).to be_true
       expect(MnemodocServer.index_artifact?(config.daemon_socket_path, config)).to be_true
       expect(MnemodocServer.index_artifact?(config.daemon_lock_path, config)).to be_true
+      expect(MnemodocServer.index_artifact?(config.daemon_pid_path, config)).to be_true
     end
 
     it "leaves ordinary documents sharing the directory alone" do

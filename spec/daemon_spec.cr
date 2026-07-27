@@ -112,6 +112,23 @@ Spectator.describe MnemodocServer::Daemon do
     end
   end
 
+  describe "#run (pid file)" do
+    it "writes its pid on startup and removes the file on shutdown" do
+      daemon = start_daemon(config)
+      pid_path = config.daemon_pid_path
+
+      begin
+        expect(File.exists?(pid_path)).to be_true
+        expect(File.read(pid_path).strip.to_i).to eq(Process.pid)
+      ensure
+        daemon.stop
+        sleep 200.milliseconds
+      end
+
+      expect(File.exists?(pid_path)).to be_false
+    end
+  end
+
   describe "#run (idle shutdown)" do
     it "stops and removes the socket file after daemon_idle_timeout seconds" do
       daemon = start_daemon(idle_config)

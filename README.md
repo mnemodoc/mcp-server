@@ -195,7 +195,11 @@ mnemodoc-server status                                                     # Ind
 mnemodoc-server delete <path>                                              # Remove from index
 mnemodoc-server context [--files <path>]... [--task <kind>] [--query "<text>"] # Resolve & print the role to adopt
 mnemodoc-server info                                                       # Version info
+mnemodoc-server daemon status                                              # Is this project's daemon running?
+mnemodoc-server daemon stop [--timeout 10]                                 # Stop it gracefully
 ```
+
+`daemon stop` probes the daemon's socket before signalling anything: if nothing answers, it removes the stale socket and pid file and reports that no daemon is running, rather than risking a `SIGTERM` to an unrelated process that inherited a dead daemon's pid. If the daemon does not exit within `--timeout` seconds the command says so and stops — it never escalates to `SIGKILL` against a process holding an open SQLite database.
 
 ## MCP tools
 

@@ -44,14 +44,9 @@ module MnemodocServer
       store : Store::SQLite? = nil        # ameba:disable Lint/UselessAssign
       embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
 
-      # Ensure the socket's parent directory (= the index directory) exists
-      # before MCP::Http tries to bind.
-      Dir.mkdir_p(File.dirname(@config.daemon_socket_path))
-
-      store = Store::SQLite.new(
-        @config.db_path,
-        vec0: @config.search.backend != "qdrant"
-      )
+      # Opening the store also prepares the index directory (= the socket's
+      # parent), which MCP::Http needs to exist before it can bind.
+      store = MnemodocServer.open_store(@config)
       # Non-nil binding captured by the background fiber closure.
       active_store = store
 
@@ -79,6 +74,9 @@ module MnemodocServer
       @transport = t
 
       t.on_ready do
+        # Written only once the socket is bound, so the file's presence means
+        # "a daemon is reachable here" rather than "one is starting up".
+        File.write(@config.daemon_pid_path, "#{Process.pid}\n")
         SystemD.ready
         ready_channel.try(&.send(nil))
       end
@@ -88,6 +86,9 @@ module MnemodocServer
 
       t.start
     ensure
+      # Best-effort: a hard kill leaves the file behind, which is why callers
+      # probe /health before trusting the pid it contains.
+      File.delete?(@config.daemon_pid_path)
       embedder.try(&.close)
       store.try(&.close)
     end

@@ -237,6 +237,12 @@ module MnemodocServer
       File.join(File.dirname(db_path), "daemon.lock")
     end
 
+    # Path to the file holding the running daemon's pid. Lives beside the index
+    # DB so `daemon status` and `daemon stop` can find it from the config alone.
+    def daemon_pid_path : String
+      File.join(File.dirname(db_path), "daemon.pid")
+    end
+
     # Default per-project database: `.mnemodoc/index.db` beside the config file.
     # Two projects sharing a basename stay isolated by construction, since the
     # location IS the project rather than a hash of its path.

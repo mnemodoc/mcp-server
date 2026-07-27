@@ -319,6 +319,17 @@ Spectator.describe MnemodocServer::Config do
       expect(config.daemon_socket_path).to eq("/tmp/some-project/.mnemodoc/daemon.sock")
       expect(config.daemon_lock_path).to eq("/tmp/some-project/.mnemodoc/daemon.lock")
     end
+
+    it "places daemon.pid beside the index DB" do
+      config = MnemodocServer::Config.from_yaml("db:\n  path: /tmp/x/index.db")
+      expect(config.daemon_pid_path).to eq("/tmp/x/daemon.pid")
+    end
+
+    it "places daemon.pid inside .mnemodoc when the DB location is derived" do
+      config = MnemodocServer::Config.from_yaml("")
+      config.source_dir = "/tmp/some-project"
+      expect(config.daemon_pid_path).to eq("/tmp/some-project/.mnemodoc/daemon.pid")
+    end
   end
 
   describe "#log_file_path" do

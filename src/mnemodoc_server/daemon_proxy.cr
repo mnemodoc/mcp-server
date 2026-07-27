@@ -284,7 +284,9 @@ module MnemodocServer
     private def ensure_daemon : Bool
       return true if healthy?
 
-      Dir.mkdir_p(File.dirname(@config.daemon_lock_path))
+      # Creates the index directory (and its .gitignore) before the lock file
+      # lands there, since this runs before the daemon has opened the store.
+      @config.prepare_index_dir!
       File.open(@config.daemon_lock_path, "w") do |lock|
         lock.flock_exclusive do
           # Another proxy may have spawned it while we waited for the lock.
@@ -329,15 +331,7 @@ module MnemodocServer
     # UNIX socket. Any connection error (no socket, refused, reset) is treated
     # as not-healthy.
     private def healthy? : Bool
-      socket = UNIXSocket.new(@config.daemon_socket_path)
-      client = HTTP::Client.new(socket)
-      begin
-        client.get("/health").status_code == 200
-      ensure
-        client.close
-      end
-    rescue
-      false
+      MnemodocServer.daemon_healthy?(@config)
     end
   end
 end
