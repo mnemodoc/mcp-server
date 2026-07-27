@@ -44,10 +44,15 @@ module MnemodocServer
         end.to_a
       end
 
-      # Finds the top_k × 4 nearest chunks via the vec0 KNN SQL index.
+      # Finds the top_k nearest chunks via the vec0 KNN SQL index.
       # Delegates entirely to store.knn_chunks; see Store::SQLite#knn_chunks.
+      #
+      # top_k is honoured as asked. Deciding how wide to fetch belongs to the
+      # caller: Hybrid already over-fetches before calling, and multiplying
+      # again here made this path pull 16× top_k where the Qdrant overload
+      # below pulls 4×, so the ranking depended on the configured backend.
       def search(query_vec : Array(Float32), store : Store::SQLite, top_k : Int32) : Array({chunk: Chunk, score: Float64, rank: Int32})
-        store.knn_chunks(query_vec, limit: top_k * 4)
+        store.knn_chunks(query_vec, limit: top_k)
       end
 
       # KNN via Qdrant (the opt-in backend): hit ids are hydrated to Chunks from

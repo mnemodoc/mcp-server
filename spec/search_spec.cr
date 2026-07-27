@@ -169,6 +169,25 @@ Spectator.describe MnemodocServer::Search do
       expect(results.first[:rank]).to eq(1)
       store.close
     end
+
+    # This overload must return exactly what it was asked for. Widening the ask
+    # is the caller's business — Hybrid already multiplies before calling, so a
+    # second multiplication here made the vec0 path fetch 16x top_k while the
+    # Qdrant path fetched 4x, and the same query ranked differently depending on
+    # which backend was configured.
+    it "returns exactly top_k candidates, without widening the request" do
+      store = MnemodocServer::Store::SQLite.new(tmp_db)
+      mtime = Time.utc.to_unix
+      store.upsert_file("/many.md", mtime: mtime)
+      store.save_chunks((1..20).map { |i|
+        MnemodocServer::Chunk.new(file_path: "/many.md", heading: nil, parent_heading: nil,
+          content: "chunk #{i}", embedding: vec_768(i.to_f32 / 100), token_count: 1, mtime: mtime)
+      })
+
+      results = MnemodocServer::Search::Semantic.new.search(vec_768(0.01_f32), store, top_k: 3)
+      expect(results.size).to eq(3)
+      store.close
+    end
   end
 
   describe MnemodocServer::Search::Hybrid do
