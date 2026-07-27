@@ -10,8 +10,8 @@
 # Ignore MacOS files
 .DS_Store
 
-# Ignore mnemodoc-server runtime data
-/index.db
+# Ignore mnemodoc-server runtime data. The index itself lives in .mnemodoc/,
+# which carries its own self-ignoring .gitignore written at creation time.
 *.log
 
 # Ignore Spectator test failure cache

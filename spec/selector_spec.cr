@@ -38,6 +38,14 @@ Spectator.describe MnemodocServer::Roles::Selector do
     expect { selector.select(["a.cr"], "", "") }.to raise_error(MnemodocServer::Roles::NoRolesError)
   end
 
+  # The CLI prints `Error: #{ex.message}`, so an empty message surfaces as a
+  # bare "Error:" with nothing actionable in it.
+  it "explains what is missing when no roles are configured" do
+    selector = MnemodocServer::Roles::Selector.new([] of MnemodocServer::Roles::Role, nil, nil)
+    expect { selector.select(["a.cr"], "", "") }
+      .to raise_error(MnemodocServer::Roles::NoRolesError, /context\.roles/)
+  end
+
   it "returns the decisive role on a clear file-glob win" do
     roles = [role("crystal", when_files: ["**/*.cr"]), role("rails", when_files: ["**/*.rb"])]
     selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
@@ -85,6 +93,13 @@ Spectator.describe MnemodocServer::Roles::Selector do
     roles = [role("crystal", when_files: ["**/*.cr"]), role("rails", when_files: ["**/*.rb"])]
     selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
     expect { selector.select([] of String, "", "") }.to raise_error(MnemodocServer::Roles::NeedSignalError)
+  end
+
+  it "points at context.default when nothing matches and no default is set" do
+    roles = [role("crystal", when_files: ["**/*.cr"]), role("rails", when_files: ["**/*.rb"])]
+    selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+    expect { selector.select([] of String, "", "") }
+      .to raise_error(MnemodocServer::Roles::NeedSignalError, /context\.default/)
   end
 
   it "returns the default (not a semantic guess) when an edited file matches no rule" do

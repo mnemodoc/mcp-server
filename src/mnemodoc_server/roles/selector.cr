@@ -1,11 +1,21 @@
 module MnemodocServer
   module Roles
-    # Raised when the context section declares no roles.
-    class NoRolesError < Exception; end
+    # Raised when the context section declares no roles. Carries a default
+    # message: the CLI prints `Error: #{ex.message}`, so an empty one surfaces
+    # as a bare "Error:" that says nothing about what to fix.
+    class NoRolesError < Exception
+      def initialize(message : String = "no roles configured: declare at least one entry under `context.roles` in the config file")
+        super(message)
+      end
+    end
 
     # Raised when no rule matches, no default role is set, and the context
     # bundle is empty so a semantic tie-break is impossible.
-    class NeedSignalError < Exception; end
+    class NeedSignalError < Exception
+      def initialize(message : String = "no rule matched and no fallback is available: set `context.default` in the config file, or pass --files/--task/--query")
+        super(message)
+      end
+    end
 
     # One role's rule score, exposed to the client for transparency.
     struct Candidate
@@ -163,7 +173,7 @@ module MnemodocServer
       end
 
       private def semantic_pick(shortlist : Array(Role), bundle : String)
-        embedder = @embedder || raise NeedSignalError.new
+        embedder = @embedder || raise NeedSignalError.new("semantic tie-break needs an embedder, but none is configured; set `context.default` in the config file to break the tie without one")
         bundle_vec = embedder.embed_batch([bundle]).first
         best = shortlist.first
         best_cosine = -1.0
