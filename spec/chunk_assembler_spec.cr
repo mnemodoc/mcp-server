@@ -201,4 +201,39 @@ Spectator.describe MnemodocServer::Indexer::ChunkAssembler do
       expect(chunks.map(&.content)).to eq(["Le chiffre d'affaires a doublé.", "Run mkdocs build."])
     end
   end
+
+  # An oversized section is cut into pieces, and the pieces must stay faithful
+  # to what they claim: the declared token count has to describe the text that
+  # was actually stored, and paragraphs must not lose the blank line that made
+  # them paragraphs.
+  describe "oversized sections" do
+    let(paragraphs) { (1..40).map { |i| "Paragraphe #{i}. " + ("mot " * 60) }.join("\n\n") }
+
+    # The estimator's own formula, restated here on purpose: the point is that
+    # the declared count describes chunk.content and nothing else. A piece cut
+    # mid-line can open on whitespace, and the count used to be taken before
+    # that whitespace was stripped away.
+    private def expected_tokens(text : String) : Int32
+      Math.max((text.split(/\s+/).size * 1.3).to_i, (text.size / 3.0).to_i)
+    end
+
+    it "counts tokens on the text it stores" do
+      # Trailing spaces on every paragraph: a piece ends where a paragraph
+      # does, so the piece carries them and content.strip drops them.
+      padded = (1..40).map { |i| "Paragraphe #{i}. " + ("mot " * 60) + "   " }.join("\n\n")
+      sections = [s.new("## Long", nil, padded)]
+      chunks = assembler.assemble("doc/a.md", sections, "x", mtime: 1_i64)
+      expect(chunks.size).to be > 1
+      chunks.each do |chunk|
+        expect(chunk.token_count).to eq(expected_tokens(chunk.content))
+      end
+    end
+
+    it "keeps the blank line between packed paragraphs" do
+      sections = [s.new("## Long", nil, paragraphs)]
+      chunks = assembler.assemble("doc/a.md", sections, "x", mtime: 1_i64)
+      expect(chunks.size).to be > 1
+      expect(chunks.first.content).to contain("\n\nParagraphe 2.")
+    end
+  end
 end

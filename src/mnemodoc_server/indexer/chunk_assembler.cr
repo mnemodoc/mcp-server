@@ -11,6 +11,13 @@ module MnemodocServer
       # Kept well below nomic-embed-text's ~2048 limit for estimate margin.
       MAX_TOKENS = 1200
 
+      # Width of the last-resort character window, in CHARACTERS — a different
+      # unit from MAX_TOKENS, which is why it is a different constant. It stays
+      # deliberately conservative: at roughly three characters per token, a
+      # window this wide can never exceed the budget, and raising MAX_TOKENS
+      # cannot silently push these slices over it.
+      MAX_SLICE_CHARS = 1200
+
       # Inline-link patterns, grouped by markup family. Detection is applied
       # PER FILE EXTENSION (see link_patterns_for) so one format's grammar never
       # leaks into another's — e.g. RST/AsciiDoc syntaxes must not strip a
@@ -131,13 +138,16 @@ module MnemodocServer
       private def emit_split_section(file_path : String, heading : String?, text : String, parent : String?, mtime : Int64, chunks : Array(Chunk)) : Nil
         hard_split(text).each_with_index do |part, i|
           piece_heading = heading.nil? ? nil : (i == 0 ? heading : "#{heading} (suite)")
+          # Counted on the stored text, not on the raw part: a piece opening on
+          # whitespace otherwise declared a budget larger than what it holds.
+          body = part.strip
           chunks << Chunk.new(
             file_path: file_path,
             heading: piece_heading,
             parent_heading: parent,
-            content: part.strip,
+            content: body,
             embedding: [] of Float32,
-            token_count: estimate_tokens(part),
+            token_count: estimate_tokens(body),
             mtime: mtime
           )
         end
@@ -150,17 +160,25 @@ module MnemodocServer
         pieces.empty? ? [text] : pieces
       end
 
+      # A unit of text that fits the budget, tagged with how it must be joined
+      # back: a whole paragraph gets its blank line returned to it, while lines
+      # and character slices are consecutive fragments of one paragraph and take
+      # a single newline. Without the tag the split dropped every blank line,
+      # so a packed piece read as one run-on block while short sections kept
+      # their shape — the same file yielding chunks formatted two ways.
+      record Unit, text : String, paragraph : Bool
+
       # Breaks text into units within MAX_TOKENS, descending in granularity:
       # paragraphs, then lines, then fixed character windows.
-      private def atomic_units(text : String) : Array(String)
-        units = [] of String
+      private def atomic_units(text : String) : Array(Unit)
+        units = [] of Unit
         text.split(/\n\n+/).each do |para|
           if estimate_tokens(para) <= MAX_TOKENS
-            units << para
+            units << Unit.new(para, true)
           else
             para.each_line do |line|
               if estimate_tokens(line) <= MAX_TOKENS
-                units << line
+                units << Unit.new(line, false)
               else
                 slice_by_chars(line, units)
               end
@@ -171,31 +189,41 @@ module MnemodocServer
       end
 
       # Slices an oversized line into fixed character windows.
-      private def slice_by_chars(line : String, units : Array(String)) : Nil
+      private def slice_by_chars(line : String, units : Array(Unit)) : Nil
         pos = 0
         while pos < line.size
-          units << line[pos, MAX_TOKENS]
-          pos += MAX_TOKENS
+          units << Unit.new(line[pos, MAX_SLICE_CHARS], false)
+          pos += MAX_SLICE_CHARS
         end
       end
 
       # Greedily concatenates units into pieces within MAX_TOKENS.
       # Uses the actual joined token count (not a running sum) so that newline
       # separators between units never push a piece silently over the budget.
-      private def pack(units : Array(String)) : Array(String)
+      private def pack(units : Array(Unit)) : Array(String)
         result = [] of String
-        current = [] of String
+        current = [] of Unit
         units.each do |unit|
-          candidate = current + [unit]
-          if estimate_tokens(candidate.join("\n")) > MAX_TOKENS && !current.empty?
-            result << current.join("\n")
+          if estimate_tokens(join_units(current + [unit])) > MAX_TOKENS && !current.empty?
+            result << join_units(current)
             current = [unit]
           else
             current << unit
           end
         end
-        result << current.join("\n") unless current.empty?
+        result << join_units(current) unless current.empty?
         result
+      end
+
+      # Rejoins units, restoring the blank line wherever a paragraph boundary
+      # sits. Two fragments of one oversized paragraph stay on adjacent lines.
+      private def join_units(units : Array(Unit)) : String
+        String.build do |io|
+          units.each_with_index do |unit, i|
+            io << (i.zero? ? "" : (units[i - 1].paragraph || unit.paragraph ? "\n\n" : "\n"))
+            io << unit.text
+          end
+        end
       end
 
       # Conservative token estimate: max of word-based and char-based so dense
