@@ -10,6 +10,12 @@ module MnemodocServer
     getter embedding : Array(Float32)
     getter token_count : Int32
     getter mtime : Int64
+    # The `chunks.id` this came from, set only by the store's readers. Nil for a
+    # chunk that has not been persisted yet (everything the indexer builds), so
+    # it identifies a chunk but cannot be relied on to exist. Search fusion uses
+    # it as the key that tells two chunks apart: file path and heading do not,
+    # since one file routinely holds several chunks under the same heading.
+    getter id : Int64?
 
     def initialize(
       @file_path : String,
@@ -19,6 +25,7 @@ module MnemodocServer
       @embedding : Array(Float32),
       @token_count : Int32,
       @mtime : Int64,
+      @id : Int64? = nil,
     )
     end
   end

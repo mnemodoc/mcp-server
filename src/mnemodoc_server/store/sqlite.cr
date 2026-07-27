@@ -305,13 +305,14 @@ module MnemodocServer
         placeholders = Array.new(paths.size, "?").join(",")
         chunks = [] of Chunk
         @db.query(
-          "SELECT c.file_path, c.heading, c.parent_heading, c.content, c.token_count, f.mtime " \
+          "SELECT c.id, c.file_path, c.heading, c.parent_heading, c.content, c.token_count, f.mtime " \
           "FROM chunks c JOIN files f ON c.file_path = f.path " \
           "WHERE c.file_path IN (#{placeholders})",
           args: paths.map(&.as(DB::Any))
         ) do |result_set|
           result_set.each do
             chunks << Chunk.new(
+              id: result_set.read(Int64),
               file_path: result_set.read(String),
               heading: result_set.read(String?),
               parent_heading: result_set.read(String?),
@@ -340,6 +341,7 @@ module MnemodocServer
           result_set.each do
             id = result_set.read(Int64)
             result[id] = Chunk.new(
+              id: id,
               file_path: result_set.read(String),
               heading: result_set.read(String?),
               parent_heading: result_set.read(String?),
@@ -417,6 +419,7 @@ module MnemodocServer
           result_set.each do
             id = result_set.read(Int64)
             chunk_map[id] = Chunk.new(
+              id: id,
               file_path: result_set.read(String),
               heading: result_set.read(String?),
               parent_heading: result_set.read(String?),

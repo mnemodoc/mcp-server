@@ -98,13 +98,31 @@ module MnemodocServer
         mtime >= cutoff ? score * (1.0 + @config.recency_boost) : score
       end
 
+      # Identifies a chunk for fusion: the two signals must land on the same key
+      # for the same chunk, and on different keys for different ones.
+      #
+      # The `chunks.id` is what makes that true. Both signals read their chunks
+      # from the store, so both carry it. Path + heading does NOT: a headingless
+      # document, and every section long enough to be split, yield several chunks
+      # sharing one heading — they collapsed onto a single entry, so one passage
+      # disappeared from the results while its RRF mass inflated the survivor.
+      # The path+heading form is kept only for a chunk built outside the store
+      # (never the case on the search path), where it is the best available.
+      private def fusion_key(chunk : Chunk) : String
+        if id = chunk.id
+          "id:#{id}"
+        else
+          "path:#{chunk.file_path}::#{chunk.heading}"
+        end
+      end
+
       # Adds the semantic RRF contribution (weight 1.0) per chunk.
       private def accumulate_semantic(
         scores : Hash(String, NamedTuple(chunk: Chunk, rrf: Float64, similarity: Float64?)),
         semantic_results : Array(NamedTuple(chunk: Chunk, score: Float64, rank: Int32)),
       ) : Nil
         semantic_results.each do |sem_result|
-          key = "#{sem_result[:chunk].file_path}::#{sem_result[:chunk].heading}"
+          key = fusion_key(sem_result[:chunk])
           current = scores[key]?.try(&.[:rrf]) || 0.0
           contribution = rrf_score(sem_result[:rank])
           scores[key] = {chunk: sem_result[:chunk], rrf: current + contribution, similarity: sem_result[:score]}
@@ -127,7 +145,7 @@ module MnemodocServer
           next unless file_chunks
           per_chunk = (@config.keyword_weight * rrf_score(rank)) / file_chunks.size
           file_chunks.each do |chunk|
-            key = "#{chunk.file_path}::#{chunk.heading}"
+            key = fusion_key(chunk)
             existing = scores[key]?
             current = existing.try(&.[:rrf]) || 0.0
             # Never invent a similarity here: a chunk the semantic signal did

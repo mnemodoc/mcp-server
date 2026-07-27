@@ -281,6 +281,41 @@ Spectator.describe MnemodocServer::Search do
       {store, db}
     end
 
+    # Fusion keys chunks so the two signals can meet on the same one. Keying on
+    # file path + heading collides whenever a file holds several chunks under
+    # the same heading — which is the normal shape of a headingless document,
+    # and of every section long enough to be split. The loser vanishes from the
+    # results and its RRF mass lands on the survivor, inflating it.
+    it "keeps two same-heading chunks of one file distinct through fusion" do
+      db = "/tmp/mnemodoc-fuse-#{Random::Secure.hex(4)}.db"
+      store = MnemodocServer::Store::SQLite.new(db)
+      begin
+        mtime = Time.utc.to_unix
+        store.upsert_file("/docs/flat.md", mtime: mtime)
+        store.save_chunks([
+          MnemodocServer::Chunk.new(file_path: "/docs/flat.md", heading: nil, parent_heading: nil,
+            content: "first half", embedding: axis(0), token_count: 1, mtime: mtime),
+          MnemodocServer::Chunk.new(file_path: "/docs/flat.md", heading: nil, parent_heading: nil,
+            content: "second half", embedding: axis(0), token_count: 1, mtime: mtime),
+        ])
+
+        # Recency neutralised so the scores below are exactly the RRF terms.
+        config = MnemodocServer::SearchConfig.from_yaml("mode: semantic\ntop_k: 5\nrecency_boost: 0.0")
+        results = MnemodocServer::Search::Hybrid.new(config).search("", axis(0), store)
+
+        expect(results.size).to eq(2)
+        expect(results.map(&.chunk.content).sort!).to eq(["first half", "second half"])
+        # Ranks 1 and 2 contribute 1/61 and 1/62. The collision showed up as a
+        # single result carrying their sum, so the top score is what proves the
+        # survivor is not inheriting the other's mass.
+        expect(results.first.score).to be_close(1.0 / 61, 1e-6)
+        expect(results.last.score).to be_close(1.0 / 62, 1e-6)
+      ensure
+        store.close
+        File.delete(db) rescue nil
+      end
+    end
+
     it "exposes the cosine of a semantically matched chunk" do
       store, db = seeded("/docs/a.md", "## Exact", "exact match", axis(0))
       begin
