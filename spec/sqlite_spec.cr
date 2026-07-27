@@ -446,4 +446,45 @@ Spectator.describe MnemodocServer::Store::SQLite do
       db.close
     end
   end
+  # vec0 returns an L2 distance, and the store used to hand callers
+  # `1/(1+distance)`. That is monotonic in cosine, so it ranked correctly — but
+  # it is not a similarity: it compresses the scale hard toward 0.5, and any
+  # threshold calibrated on real cosines is applied to the wrong axis. Measured
+  # on the benchmark corpus, the separation between on-topic and off-topic
+  # prompts shrank from 0.054 in cosine to 0.014 under that transform.
+  #
+  # Ollama returns unit vectors and chunk embeddings are normalised at index
+  # time, so the distance is purely angular and the conversion is exact:
+  # cos = 1 - L2²/2.
+  describe "#knn_chunks score" do
+    private def unit(index : Int32) : Array(Float32)
+      Array(Float32).new(768) { |i| i == index ? 1.0_f32 : 0.0_f32 }
+    end
+
+    it "reports a true cosine, not 1/(1+distance)" do
+      db = "/tmp/mnemodoc-knn-#{Random::Secure.hex(4)}.db"
+      store = MnemodocServer::Store::SQLite.new(db)
+      begin
+        mtime = Time.utc.to_unix
+        store.upsert_file("/a.md", mtime: mtime)
+        store.save_chunks([
+          MnemodocServer::Chunk.new(file_path: "/a.md", heading: "## Same", parent_heading: nil,
+            content: "identical", embedding: unit(0), token_count: 1, mtime: mtime),
+          MnemodocServer::Chunk.new(file_path: "/a.md", heading: "## Orthogonal", parent_heading: nil,
+            content: "orthogonal", embedding: unit(1), token_count: 1, mtime: mtime),
+        ])
+
+        by_content = store.knn_chunks(unit(0), limit: 2).to_h { |row| {row[:chunk].content, row[:score]} }
+
+        # Identical direction: cosine 1. Under 1/(1+L2) this was 1.0 too, so it
+        # is the orthogonal case that tells the two apart.
+        expect(by_content["identical"]).to be_close(1.0, 1e-4)
+        # Orthogonal: cosine 0. Under 1/(1+L2) it was 1/(1+√2) ≈ 0.414.
+        expect(by_content["orthogonal"]).to be_close(0.0, 1e-4)
+      ensure
+        store.close
+        File.delete(db) rescue nil
+      end
+    end
+  end
 end

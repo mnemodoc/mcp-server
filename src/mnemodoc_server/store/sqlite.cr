@@ -431,8 +431,21 @@ module MnemodocServer
         knn_rows.each_with_index.flat_map do |knn, i|
           chunk = chunk_map[knn[:rowid]]?
           next [] of {chunk: Chunk, score: Float64, rank: Int32} unless chunk
-          [{chunk: chunk, score: 1.0 / (1.0 + knn[:distance]), rank: i + 1}]
+          [{chunk: chunk, score: cosine_from_l2(knn[:distance]), rank: i + 1}]
         end.to_a
+      end
+
+      # vec0 ranks by L2 distance. Chunk embeddings are normalised at index time
+      # and Ollama returns unit vectors, so the distance is purely angular and
+      # L2² = 2 - 2·cos inverts exactly.
+      #
+      # This used to return 1/(1 + distance): monotonic in cosine, so ranking was
+      # correct, but it is not a similarity. It compresses the scale hard toward
+      # 0.5 — on the benchmark corpus the separation between on-topic and
+      # off-topic prompts collapsed from 0.054 in cosine to 0.014 — so any
+      # threshold calibrated on real cosines was being applied to the wrong axis.
+      private def cosine_from_l2(distance : Float64) : Float64
+        (1.0 - (distance * distance) / 2.0).clamp(-1.0, 1.0)
       end
 
       # Counts indexed files without the GROUP BY/JOIN that list_files performs.
