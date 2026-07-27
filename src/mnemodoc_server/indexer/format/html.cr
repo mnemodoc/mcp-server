@@ -16,7 +16,7 @@ module MnemodocServer
         end
 
         def extract(path : String, mtime : Int64) : Array(Chunk)
-          @assembler.assemble(path, parse_sections(File.read(path)), "", mtime)
+          @assembler.assemble(path, parse_sections(read_text(path)), "", mtime)
         rescue ex : File::Error
           Log.warn { "read failed for #{path}: #{ex.message}" }
           [] of Chunk

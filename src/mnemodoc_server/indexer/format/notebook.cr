@@ -14,7 +14,7 @@ module MnemodocServer
         end
 
         def extract(path : String, mtime : Int64) : Array(Chunk)
-          document = build_markdown(File.read(path))
+          document = build_markdown(read_text(path))
           @assembler.assemble(path, @markdown.parse_sections(document), document, mtime)
         rescue ex : File::Error
           Log.warn { "read failed for #{path}: #{ex.message}" }
@@ -25,11 +25,21 @@ module MnemodocServer
         end
 
         # Converts notebook cells into one Markdown string.
+        #
+        # Every lookup goes through `as_h?`/`as_a?` first: `JSON::Any#[]?` is not
+        # the lenient accessor it looks like, it raises on a receiver that is
+        # neither a hash nor nil. A file that is valid JSON without being a
+        # notebook — an array at the root, a string, a `cells` list holding
+        # anything but objects — would otherwise take the handler out with a
+        # bare Exception that no rescue here matches.
         private def build_markdown(raw : String) : String
-          json = JSON.parse(raw)
+          root = JSON.parse(raw).as_h?
+          return "" unless root
           io = IO::Memory.new
-          cells = json["cells"]?.try(&.as_a?) || [] of JSON::Any
-          cells.each do |cell|
+          cells = root["cells"]?.try(&.as_a?) || [] of JSON::Any
+          cells.each do |raw_cell|
+            cell = raw_cell.as_h?
+            next unless cell
             source = source_of(cell)
             next if source.strip.empty?
             case cell["cell_type"]?.try(&.as_s?)
@@ -43,7 +53,7 @@ module MnemodocServer
         end
 
         # nbformat stores `source` as either a string or an array of line strings.
-        private def source_of(cell : JSON::Any) : String
+        private def source_of(cell : Hash(String, JSON::Any)) : String
           source = cell["source"]?
           return "" unless source
           if array = source.as_a?

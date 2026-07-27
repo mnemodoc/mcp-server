@@ -11,7 +11,7 @@ module MnemodocServer
         end
 
         def extract(path : String, mtime : Int64) : Array(Chunk)
-          sections = @odp.sections_from_document(XML.parse(File.read(path)))
+          sections = @odp.sections_from_document(XML.parse(read_text(path)))
           @assembler.assemble(path, sections, "", mtime)
         rescue ex : File::Error
           Log.warn { "read failed for #{path}: #{ex.message}" }

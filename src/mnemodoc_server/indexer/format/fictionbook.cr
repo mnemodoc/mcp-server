@@ -16,7 +16,7 @@ module MnemodocServer
         end
 
         def extract(path : String, mtime : Int64) : Array(Chunk)
-          sections = NestedXml.sections(XML.parse(File.read(path)), SECTIONS, TITLES, PARAGRAPHS)
+          sections = NestedXml.sections(XML.parse(read_text(path)), SECTIONS, TITLES, PARAGRAPHS)
           @assembler.assemble(path, sections, "", mtime)
         rescue ex : File::Error
           Log.warn { "read failed for #{path}: #{ex.message}" }
