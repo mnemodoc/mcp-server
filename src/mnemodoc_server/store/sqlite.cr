@@ -61,11 +61,22 @@ module MnemodocServer
       # not populated (insert skipped) and not backfilled — the durable chunks +
       # embedding BLOBs + chunks_fts are written as usual, so Qdrant stays
       # rebuildable from SQLite.
+      # The path an uninitialised project is served from: a store that exists so
+      # the transport has one, and that touches no directory at all.
+      MEMORY = ":memory:"
+
       def initialize(db_path : String, @vec0 : Bool = true)
-        Dir.mkdir_p(File.dirname(db_path))
+        memory = db_path == MEMORY
+        Dir.mkdir_p(File.dirname(db_path)) unless memory
         # PRAGMAs are applied per-connection via URI parameters (B5 fix: ensures
         # every pooled connection has foreign_keys/WAL/timeout — not just the first).
-        uri = "sqlite3://#{db_path}?foreign_keys=1&journal_mode=wal&busy_timeout=5000"
+        # The in-memory form must be percent-encoded: `:memory:` in an authority
+        # position parses as a bad port. WAL is meaningless without a file.
+        uri = if memory
+                "sqlite3://%3Amemory%3A?foreign_keys=1&busy_timeout=5000"
+              else
+                "sqlite3://#{db_path}?foreign_keys=1&journal_mode=wal&busy_timeout=5000"
+              end
         @db = DB.open(uri)
         # Register the vec0 extension on every new connection before any query.
         @db.setup_connection do |conn|

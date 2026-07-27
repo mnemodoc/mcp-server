@@ -182,7 +182,13 @@ module MnemodocServer
   class Config
     include YAML::Serializable
 
-    property paths : Array(String) = ["doc/claude/", "app/"]
+    # No default. This used to be `["doc/claude/", "app/"]` — one particular
+    # project's layout — which was harmless while the server was launched per
+    # project with its own config, and wrong the moment a single globally
+    # registered server could land in any repository. An empty list is a
+    # validation error, so a project with no configured paths says so instead of
+    # quietly sweeping directories that happen to exist.
+    property paths : Array(String) = [] of String
 
     # Directory of the config file; not persisted to YAML. When set, relative
     # paths in `paths` and the auto DB location are resolved against it instead
@@ -362,15 +368,7 @@ module MnemodocServer
       Dir.mkdir_p(dir)
       return unless @db.path.empty?
 
-      gitignore = File.join(dir, ".gitignore")
-      return if File.exists?(gitignore)
-
-      File.write(gitignore, <<-IGNORE)
-        # Index data for mnemodoc-server — local to each machine, never committed.
-        *
-        !.gitignore
-
-        IGNORE
+      Project.write_index_gitignore(dir)
     end
 
     # Per-project key (basename + short hash of the config dir). Used for the

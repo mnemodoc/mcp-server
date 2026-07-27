@@ -14,8 +14,12 @@ require "tallboy"
 require "mcp"
 require "file_watcher"
 
+require "file_utils"
+
 require "./mnemodoc_server/helpers"
 require "./mnemodoc_server/advisories"
+require "./mnemodoc_server/project"
+require "./mnemodoc_server/install/claude_code"
 require "./mnemodoc_server/licenses"
 require "./mnemodoc_server/chunk"
 require "./mnemodoc_server/indexer/section"
@@ -73,19 +77,67 @@ module MnemodocServer
 
   @@log_file : IO? = nil
   @@logger : ::Log::IOBackend? = nil
+  # Defaults to true so that anything constructing a store or a tool registry
+  # without going through `init_app!` behaves exactly as before. Only discovery
+  # can flip it to false, and only when it actually failed to find a project.
+  @@project_initialized = true
+  @@config_file = ""
+
+  # The name of the directory that marks a project as initialised. It holds the
+  # index, the daemon socket and lock, and is git-ignored — so its presence is a
+  # local, deliberate statement that this project has been indexed.
+  PROJECT_MARKER = ".mnemodoc"
 
   # Bootstraps the application before any command runs: resets advisories,
-  # loads the YAML config from the given path, applies MNEMODOC_* overrides,
-  # validates the result, and initializes logging. Called once by every CLI
-  # entry point (serve, index, search, …) before it touches the store.
-  def self.init_app!(config_file : String) : Nil
+  # resolves which project this invocation belongs to, loads its YAML config,
+  # applies MNEMODOC_* overrides, validates the result, and initializes logging.
+  # Called once by every CLI entry point (serve, index, search, …) before it
+  # touches the store.
+  #
+  # `from` is the directory discovery starts at. It is a parameter rather than
+  # a plain `Dir.current` read so the behaviour can be exercised without
+  # changing the process's working directory.
+  def self.init_app!(config_file : String, from : String = Dir.current) : Nil
     Advisories.clear
-    load_config(config_file)
+    load_config(config_file, from)
     config.apply_env!
-    config.validate!
+    # An uninitialised project has no configuration to validate: every value is
+    # a default, and `paths` is deliberately empty. Validating here would abort
+    # the process on a condition the tools are meant to report calmly.
+    config.validate! if project_initialized?
     setup_log!
     # Surface any startup advisories to the logs now that logging is ready.
     Advisories.all.each { |advisory| Log.warn { advisory } }
+  end
+
+  # Whether this invocation resolved to an initialised project. When false the
+  # server still runs, but it owns no index: it creates nothing on disk and its
+  # tools answer with an invitation to run `init` rather than an empty result.
+  def self.project_initialized? : Bool
+    @@project_initialized
+  end
+
+  # The config file this invocation resolved to, whether it was given explicitly
+  # or discovered. Empty when no project was found. The daemon is spawned with
+  # this rather than with the raw flag, so it loads the very same configuration
+  # as the proxy instead of re-running discovery from its own inherited CWD.
+  def self.config_file : String
+    @@config_file
+  end
+
+  # Walks up from `from` and returns the first ancestor holding a `PROJECT_MARKER`
+  # directory, or nil. The nearest marker wins, so a package nested inside a
+  # larger initialised repository belongs to itself.
+  #
+  # Bounded by construction: `Path#parents` yields a finite ancestor list, so no
+  # symlink arrangement can make this loop.
+  def self.discover_project(from : String) : String?
+    start = Path[File.expand_path(from)]
+    candidates = start.parents << start
+    candidates.reverse_each do |dir|
+      return File.realpath(dir.to_s) if Dir.exists?(dir / PROJECT_MARKER)
+    end
+    nil
   end
 
   # The active configuration, memoized. Falls back to defaults when init_app!
@@ -348,7 +400,10 @@ module MnemodocServer
 
     # Index configured paths in the background so the server is immediately
     # responsive; unchanged files are skipped via mtime so restarts are cheap.
-    spawn { background_index(config, active_store, qi) }
+    # Skipped entirely with no project: there is nothing configured to index,
+    # and a globally registered server must not start crawling the directory a
+    # session happened to open in.
+    spawn { background_index(config, active_store, qi) } if project_initialized?
 
     transport = yield server
     transport.on_ready { SystemD.ready }
@@ -366,6 +421,14 @@ module MnemodocServer
   # every caller gets the same preparation and the same vec0 decision: the
   # embedded KNN tables are only needed when Qdrant is not the backend.
   def self.open_store(config : Config) : Store::SQLite
+    # An uninitialised project owns no index, and both `prepare_index_dir!` and
+    # the store itself create the directory they are given. A globally
+    # registered server opens a store in whatever directory a session starts
+    # in, so it must serve from memory here: the tools short-circuit before
+    # this store is ever read, and nothing lands on disk.
+    unless project_initialized?
+      return Store::SQLite.new(Store::SQLite::MEMORY, vec0: config.search.backend != "qdrant")
+    end
     config.prepare_index_dir!
     Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
   end
@@ -374,11 +437,32 @@ module MnemodocServer
     Config.from_yaml("")
   end
 
-  private def self.load_config(config_path : String) : Nil
-    file = File.expand_path(config_path)
+  # Resolves the project and loads its configuration.
+  #
+  # An explicit `--config` is an unambiguous statement of which project is
+  # meant, so it short-circuits discovery and its own directory becomes the
+  # project root. Otherwise the project is discovered by walking up from `from`
+  # looking for the marker directory.
+  private def self.load_config(config_path : String, from : String) : Nil
+    if config_path.empty?
+      root = discover_project(from)
+      @@project_initialized = !root.nil?
+      unless root
+        Advisories.add("no MnemoDoc project found at or above #{File.expand_path(from)}; run `mnemodoc-server init` to index this project")
+        @@config_file = ""
+        self.config = default_config
+        return
+      end
+      file = File.join(root, ".mnemodoc.yml")
+    else
+      @@project_initialized = true
+      file = File.expand_path(config_path)
+    end
+
     unless File.exists?(file)
       Advisories.add("no config file found at #{file}; running on default settings — indexed paths may be empty or wrong")
     end
+    @@config_file = file
     content = File.exists?(file) ? File.read(file) : ""
     cfg = Config.from_yaml(content)
     # Anchor path resolution to the config file's directory so relative paths

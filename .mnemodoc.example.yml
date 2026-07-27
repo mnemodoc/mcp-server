@@ -1,3 +1,5 @@
+# Required — there is no default. `mnemodoc-server init` writes this section
+# from the documentation directories it actually finds in the project.
 paths:
   - doc/claude/
   - app/

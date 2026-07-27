@@ -136,37 +136,56 @@ brew install mnemodoc/tap/mnemodoc-server
 # https://github.com/mnemodoc/mcp-server/releases
 ```
 
-**3. Create a config in your project**
+**3. Register mnemodoc with your client — once**
 
 ```sh
-# Download the example config
-curl -fsSL https://raw.githubusercontent.com/mnemodoc/mcp-server/master/.mnemodoc.example.yml \
-  -o .mnemodoc.yml
-
-# Then edit .mnemodoc.yml to set your doc paths
+mnemodoc-server install            # shows what it will write, then asks
+mnemodoc-server install --print-config   # or just look, and write nothing
 ```
 
-**4. Index your docs and test** *(optional — `serve` auto-indexes on startup)*
+This registers the MCP server in `~/.claude.json` and adds two hooks to
+`~/.claude/settings.json`: the role selector on edits, and the passage injector
+on prompts. Both files are read, modified and rewritten atomically, so other
+tools' settings are preserved. `--no-hooks` and `--no-permissions` narrow what
+is written; `mnemodoc-server uninstall` removes exactly what was added.
+
+The registration carries **no** project path. The server finds its project by
+walking up from the directory the client launches it in, so one global entry
+serves every project.
+
+**4. Initialise each project you want indexed**
 
 ```sh
-mnemodoc-server index doc/ --config .mnemodoc.yml
-mnemodoc-server search "how to persist a model" --config .mnemodoc.yml
+cd ~/code/my-project
+mnemodoc-server init
 ```
 
-**5. Add to your MCP client**
+`init` is the deliberate act that turns a directory into a MnemoDoc project. It
+creates the `.mnemodoc/` index directory (self-ignoring, never committed),
+generates a `.mnemodoc.yml` from the documentation directories it actually finds
+— `doc/`, `docs/`, `documentation/`, `.claude/`, falling back to the project
+root — and builds the first index. An existing `.mnemodoc.yml` is never
+overwritten unless you pass `--force`.
 
-*Claude Code* (`~/.claude/settings.json`) — stdio transport, no network exposure:
+Until a project is initialised the server stays inert there: it creates nothing,
+indexes nothing, and every tool answers with what to do about it rather than an
+empty result that would read as "the documentation says nothing on this".
+`mnemodoc-server uninit` removes the marker and keeps the configuration.
 
-```json
-{
-  "mcpServers": {
-    "doc": {
-      "command": "mnemodoc-server",
-      "args": ["serve", "--config", "/path/to/project/.mnemodoc.yml"]
-    }
-  }
-}
+**5. Check it**
+
+```sh
+mnemodoc-server status
+mnemodoc-server search "how to persist a model"
 ```
+
+Neither needs `--config`: like the server, they discover the nearest project by
+walking up. Pass `--config` explicitly to point at a different one.
+
+### Wiring a client by hand
+
+`install` covers Claude Code. For any other client, register the binary
+yourself.
 
 *Cursor* (`.cursor/mcp.json`) — HTTP transport, start the server first:
 
@@ -184,10 +203,28 @@ mnemodoc-server serve --sse --config /path/to/project/.mnemodoc.yml
 }
 ```
 
+*Any stdio client* — the equivalent of what `install` writes:
+
+```json
+{
+  "mcpServers": {
+    "mnemodoc": {
+      "type": "stdio",
+      "command": "/usr/local/bin/mnemodoc-server",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
 ## CLI
 
 ```sh
-mnemodoc-server serve [--config .mnemodoc.yml]                        # Claude Code (stdio, default)
+mnemodoc-server install [--print-config] [--no-hooks] [--no-permissions]    # Register with Claude Code (once, globally)
+mnemodoc-server uninstall                                                  # Remove that registration
+mnemodoc-server init [--force]                                             # Make this directory a MnemoDoc project
+mnemodoc-server uninit                                                     # Remove the project marker, keep the config
+mnemodoc-server serve [--config <file>]                                    # Claude Code (stdio, default)
 mnemodoc-server serve --sse [--port 8765] [--host 127.0.0.1]             # Cursor / other clients
 mnemodoc-server index <path>                                               # Index a file or directory
 mnemodoc-server search "<query>" [--mode hybrid|semantic|keyword] [--top 5] # Test search from terminal
@@ -263,11 +300,32 @@ $ mnemodoc-server search "retry policy" --json | jq -r '.results[0].content'
 
 **Payloads evolve additively**: fields may be added, never removed or renamed. There is no schema version to negotiate.
 
-`--quiet` prints nothing at all and reports through the exit code. It is available where that is meaningful — `index`, `delete`, `daemon status`, `daemon stop`.
+`--quiet` prints nothing at all and reports through the exit code. It is available where that is meaningful — `index`, `delete`, `init`, `uninit`, `install`, `uninstall`, `daemon status`, `daemon stop`.
 
 Two commands exit non-zero on an outcome rather than on a crash. `daemon status` exits 1 when no daemon is running, in the manner of `systemctl is-active`, which is what makes `mnemodoc-server daemon status --quiet && …` usable. `index` exits 1 when chunks failed to embed and **nothing at all** was indexed — an unreachable Ollama, most often. A run with simply nothing to do still exits 0, and the JSON payload carries a `failed` counter either way. Under `--quiet` the exit code is the whole report, which is exactly why that case must not read as success.
 
 `daemon stop` probes the daemon's socket before signalling anything: if nothing answers, it removes the stale socket and pid file and reports that no daemon is running, rather than risking a `SIGTERM` to an unrelated process that inherited a dead daemon's pid. If the daemon does not exit within `--timeout` seconds the command says so and stops — it never escalates to `SIGKILL` against a process holding an open SQLite database.
+
+## Finding the project
+
+The `.mnemodoc/` directory is what marks a directory as a MnemoDoc project —
+not the YAML file. Every command without an explicit `--config` walks up from
+the working directory to the nearest one and anchors itself there: the index,
+the daemon socket, the configuration and the paths in it all resolve against
+that project root, whatever directory you happen to be standing in.
+
+This is what makes a single global registration work. The client launches the
+server in the project it opened; the server finds the project from there. A
+directory with no marker above it is simply not a MnemoDoc project: the server
+runs, creates nothing, and says so.
+
+`.mnemodoc.yml` is versionable and describes the project; `.mnemodoc/` is local,
+git-ignored, and holds the index. A fresh clone therefore carries the
+configuration but no index, and stays inert until someone runs `init` — indexing
+stays a decision, never a side effect of opening a session.
+
+An explicit `--config` overrides all of this: its own directory becomes the
+project root.
 
 ## MCP tools
 
@@ -385,7 +443,11 @@ The tie-break only ever ranks roles that **actually matched a rule**. Similarity
 
 ### Wiring the hook
 
-Register a `PreToolUse` hook in your project's `.claude/settings.json` (the hook script itself lives in your project, not in this repo):
+`mnemodoc-server install` registers this hook for you, pointing straight at the
+binary. The rest of this section describes what it writes, and how to wire it by
+hand for a client `install` does not cover.
+
+Register a `PreToolUse` hook in `.claude/settings.json`:
 
 ```json
 {

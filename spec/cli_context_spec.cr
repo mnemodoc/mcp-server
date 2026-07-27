@@ -25,6 +25,8 @@ Spectator.describe "context CLI command" do
     File.write(File.join(tmp_dir, "crystal.md"), "# Crystal role\nUse idiomatic Crystal.")
     File.write(File.join(tmp_dir, "rails.md"), "# Rails role\nFollow Rails conventions.")
     File.write(config_path, <<-YAML)
+    paths:
+      - .
     server:
       log_file: #{log_path}
     context:
@@ -44,6 +46,8 @@ Spectator.describe "context CLI command" do
     File.write(File.join(tmp_dir, "generalist.md"), "# Generalist role\nDefault conventions.")
     File.write(File.join(tmp_dir, "policies.md"), "# Policies role\nScope ownership.")
     File.write(config_path, <<-YAML)
+    paths:
+      - .
     server:
       log_file: #{log_path}
     context:

@@ -1,4 +1,5 @@
 require "spectator"
+require "file_utils"
 
 # Parallelism is a runtime decision now, not a compile flag: the default
 # execution context starts at 1 and is resized on demand. `-Dpreview_mt` still
@@ -25,6 +26,24 @@ Spectator.configure do |config|
 end
 
 require "../src/mnemodoc_server"
+
+# Puts the process back into the "inside a project" state that every spec but
+# the discovery ones assumes.
+#
+# `init_app!` writes process-wide state, and specs run in a randomised order in
+# a single process: an example that deliberately resolves to "no project" would
+# otherwise hand the uninitialised tool short-circuit to whatever runs next,
+# producing failures that move around with the seed. A throwaway project
+# restores the flag through the normal path rather than by reaching into the
+# module's internals.
+def restore_project_state : Nil
+  root = File.join(Dir.tempdir, "mnemodoc-restore-#{Random::Secure.hex(6)}")
+  Dir.mkdir_p(File.join(root, MnemodocServer::PROJECT_MARKER))
+  File.write(File.join(root, ".mnemodoc.yml"), "paths:\n  - docs/\n")
+  MnemodocServer.init_app!("", from: root)
+ensure
+  FileUtils.rm_rf(root) if root
+end
 
 def with_env(values : Hash(String, String), &)
   old_values = {} of String => String?

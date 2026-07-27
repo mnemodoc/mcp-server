@@ -45,7 +45,7 @@ module MnemodocServer
       include CLIErrorHandling
       define_help description: "Start the MCP server (stdio or SSE)"
 
-      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       define_flag stdio : Bool, long: "stdio", default: false, description: "Use stdio transport (for Claude Code)" # ameba:disable Lint/UselessAssign
       define_flag sse : Bool, long: "sse", default: false, description: "Use HTTP/SSE transport"                    # ameba:disable Lint/UselessAssign
       define_flag port : Int32, long: "port", default: 0, description: "SSE port override (0 = use config)"         # ameba:disable Lint/UselessAssign
@@ -75,17 +75,254 @@ module MnemodocServer
         # SSE must be explicitly requested with --sse.
         if !flags.stdio && flags.sse
           MnemodocServer.serve_sse(config)
-        elsif config.server.daemon?
+        elsif config.server.daemon? && MnemodocServer.project_initialized?
           # Default stdio path: proxy to (or auto-spawn) the per-project daemon.
-          MnemodocServer::DaemonProxy.new(config, flags.config).run
+          # The daemon is spawned with the *resolved* config path, not the raw
+          # flag, so it loads this project rather than re-running discovery from
+          # the working directory it happens to inherit.
+          MnemodocServer::DaemonProxy.new(config, MnemodocServer.config_file).run
         else
-          # Daemon disabled: serve stdio standalone in this process.
+          # Daemon disabled, or no project here at all. In the latter case there
+          # is nothing for a daemon to own, and spawning one would create the
+          # very index directory the marker is meant to withhold.
           MnemodocServer.serve_stdio(config)
         end
       rescue ex : Indexer::EmbedderError
         handle_error(ex)
       ensure
         MnemodocServer.close_log_file!
+      end
+    end
+
+    # Registers MnemoDoc with an MCP client — once, globally. Per-project setup
+    # is `init`'s job; this command only has to be run again when the binary
+    # moves.
+    class InstallCommand < Admiral::Command
+      include CLIErrorHandling
+      define_help description: "Register mnemodoc-server with an MCP client"
+
+      # The only client whose full wiring — MCP entry plus both hooks — is
+      # documented and verified here. Others are rejected by name rather than
+      # written blind.
+      TARGETS = %w(claude)
+
+      # ameba:disable Lint/UselessAssign
+      define_flag target : String, long: "target", default: "claude", description: "Client to configure (claude)"
+      # ameba:disable Lint/UselessAssign
+      define_flag yes : Bool, long: "yes", short: "y", default: false, description: "Do not ask for confirmation"
+      # ameba:disable Lint/UselessAssign
+      define_flag print_config : Bool, long: "print-config", default: false, description: "Show every change without writing anything"
+      # ameba:disable Lint/UselessAssign
+      define_flag no_hooks : Bool, long: "no-hooks", default: false, description: "Register the MCP server only; add no hooks"
+      # ameba:disable Lint/UselessAssign
+      define_flag no_permissions : Bool, long: "no-permissions", default: false, description: "Do not pre-approve the read-only tools"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+      # ameba:disable Lint/UselessAssign
+      define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
+
+      def run
+        installer = build_installer
+        changes = installer.plan
+
+        if flags.print_config
+          print_plan(changes)
+          return
+        end
+
+        unless flags.yes
+          print_plan(changes)
+          print "Apply? [y/N] "
+          answer = gets.try(&.strip.downcase)
+          unless answer == "y" || answer == "yes"
+            puts "Nothing written." unless flags.quiet
+            return
+          end
+        end
+
+        installer.apply
+        report(changes.keys)
+      rescue ex : Install::UnreadableTarget
+        handle_error(ex, json: flags.json)
+      end
+
+      # Builds the installer, rejecting an unknown target by name rather than
+      # writing a configuration shape nobody verified.
+      private def build_installer : Install::ClaudeCode
+        unless TARGETS.includes?(flags.target)
+          handle_error(Exception.new("unknown target '#{flags.target}'; known targets: #{TARGETS.join(", ")}"), json: flags.json)
+        end
+        Install::ClaudeCode.new(
+          binary: Process.executable_path || "mnemodoc-server",
+          hooks: !flags.no_hooks,
+          permissions: !flags.no_permissions,
+        )
+      end
+
+      # Shows the full resulting content of every file, not a summary: a dry run
+      # that under-reports invites trust it has not earned.
+      private def print_plan(changes : Hash(String, String)) : Nil
+        return if flags.quiet
+        changes.each do |path, content|
+          puts "########## #{path}"
+          puts content
+        end
+      end
+
+      private def report(paths : Array(String)) : Nil
+        return if flags.quiet
+        if flags.json
+          puts({installed: true, files: paths}.to_json)
+        else
+          puts "Registered mnemodoc with Claude Code:"
+          paths.each { |path| puts "  #{path}" }
+          puts "Run `mnemodoc-server init` in a project to index it."
+        end
+      end
+    end
+
+    # Undoes what `install` wrote, and only that.
+    class UninstallCommand < Admiral::Command
+      include CLIErrorHandling
+      define_help description: "Remove mnemodoc-server from an MCP client's configuration"
+
+      # ameba:disable Lint/UselessAssign
+      define_flag target : String, long: "target", default: "claude", description: "Client to clean up (claude)"
+      # ameba:disable Lint/UselessAssign
+      define_flag yes : Bool, long: "yes", short: "y", default: false, description: "Do not ask for confirmation"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+      # ameba:disable Lint/UselessAssign
+      define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
+
+      def run
+        unless InstallCommand::TARGETS.includes?(flags.target)
+          handle_error(Exception.new("unknown target '#{flags.target}'; known targets: #{InstallCommand::TARGETS.join(", ")}"), json: flags.json)
+        end
+
+        unless flags.yes
+          print "Remove mnemodoc from Claude Code's configuration? [y/N] "
+          answer = gets.try(&.strip.downcase)
+          unless answer == "y" || answer == "yes"
+            puts "Nothing changed." unless flags.quiet
+            return
+          end
+        end
+
+        Install::ClaudeCode.new(binary: Process.executable_path || "mnemodoc-server").remove
+        return if flags.quiet
+        if flags.json
+          puts({uninstalled: true}.to_json)
+        else
+          puts "Removed mnemodoc from Claude Code's configuration."
+        end
+      rescue ex : Install::UnreadableTarget
+        handle_error(ex, json: flags.json)
+      end
+    end
+
+    # Turns the current directory into a MnemoDoc project: creates the marker,
+    # generates a configuration from what is actually there, and builds the
+    # first index.
+    #
+    # This is the only command that creates the marker. Everything on the
+    # serving path deliberately refuses to, so that a server registered once and
+    # globally cannot sprout an index in every directory a session opens in.
+    class Init < Admiral::Command
+      include CLIErrorHandling
+      include CLIOutput
+      define_help description: "Initialise a MnemoDoc project in the current directory"
+
+      # ameba:disable Lint/UselessAssign
+      define_flag force : Bool, long: "force", default: false, description: "Regenerate .mnemodoc.yml even if one exists"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+      # ameba:disable Lint/UselessAssign
+      define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
+
+      def run
+        # Declared up front so the ensure block can close it even when the
+        # bootstrap below raises before a store is ever opened.
+        # ameba:disable Lint/UselessAssign
+        store : Store::SQLite? = nil
+        project = Project.initialize_at(Dir.current, force: flags.force)
+
+        # Load through the normal bootstrap so the first index runs against
+        # exactly the configuration every later invocation will see.
+        MnemodocServer.init_app!(project[:config])
+        config = MnemodocServer.config
+        store = MnemodocServer.open_store(config)
+        indexed = index_project(config, store)
+
+        payload = {
+          project:        project[:project],
+          config:         project[:config],
+          config_written: project[:config_written],
+          paths:          project[:paths],
+          files_indexed:  indexed,
+        }
+        emit(payload, json: flags.json, quiet: flags.quiet) do
+          puts "Initialised MnemoDoc project at #{project[:project]}"
+          puts "  paths:   #{project[:paths].join(", ")}"
+          puts "  config:  #{project[:config]}#{project[:config_written] ? "" : " (kept as it was)"}"
+          puts "  indexed: #{indexed} file(s)"
+        end
+      rescue ex : Indexer::EmbedderError
+        handle_error(ex, json: flags.json)
+      ensure
+        store.try(&.close)
+      end
+
+      # Runs the first crawl. Embedding failures are already tolerated by the
+      # crawler, so a project can be initialised before Ollama is up and filled
+      # in later — the marker and the configuration are the durable part.
+      private def index_project(config : Config, store : Store::SQLite) : Int32
+        embedder = Indexer::Embedder.new(config.ollama)
+        registry = Indexer::Format::Registry.new(config)
+        qi = MnemodocServer.qdrant_index(config)
+        qi.try { |index| MnemodocServer.ensure_qdrant!(index, store) }
+        crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
+        result = crawler.run(store, embedder, SingleFlight.new, concurrency: config.index.concurrency)
+        store.embedding_model = config.ollama.model
+        embedder.close
+        result[:indexed]
+      end
+    end
+
+    # Removes the project marker, and only that. The generated configuration
+    # stays: it is the versionable half of a project, while the index is local
+    # and rebuildable by re-running `init`.
+    class Uninit < Admiral::Command
+      include CLIErrorHandling
+      include CLIOutput
+      define_help description: "Remove the MnemoDoc project marker from the current directory"
+
+      # ameba:disable Lint/UselessAssign
+      define_flag yes : Bool, long: "yes", short: "y", default: false, description: "Do not ask for confirmation"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
+      # ameba:disable Lint/UselessAssign
+      define_flag quiet : Bool, long: "quiet", default: false, description: "Print nothing; report through the exit code"
+
+      def run
+        root = MnemodocServer.discover_project(Dir.current)
+        unless root
+          handle_error(Exception.new("no MnemoDoc project found at or above #{Dir.current}"), json: flags.json)
+        end
+
+        unless flags.yes
+          print "Remove the index at #{File.join(root, MnemodocServer::PROJECT_MARKER)}? [y/N] "
+          answer = gets.try(&.strip.downcase)
+          unless answer == "y" || answer == "yes"
+            emit({removed: false, project: root}, json: flags.json, quiet: flags.quiet) { puts "Left untouched." }
+            return
+          end
+        end
+
+        Project.remove_marker(root)
+        emit({removed: true, project: root}, json: flags.json, quiet: flags.quiet) do
+          puts "Removed the index at #{File.join(root, MnemodocServer::PROJECT_MARKER)}; #{File.join(root, ".mnemodoc.yml")} was kept."
+        end
       end
     end
 
@@ -97,7 +334,7 @@ module MnemodocServer
       include CLIOutput
       define_help description: "Index a file or directory"
 
-      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       # ameba:disable Lint/UselessAssign
       define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
       # ameba:disable Lint/UselessAssign
@@ -179,7 +416,7 @@ module MnemodocServer
       # ameba:disable Lint/UselessAssign
       define_flag json : Bool, long: "json", default: false, description: "Emit the results as JSON, including chunk bodies"
 
-      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       define_flag mode : String, long: "mode", default: "hybrid", description: "Search mode: hybrid|semantic|keyword" # ameba:disable Lint/UselessAssign
       define_flag top : Int32, long: "top", default: 5, description: "Number of results"                              # ameba:disable Lint/UselessAssign
       define_argument query : String, description: "Search query", required: true                                     # ameba:disable Lint/UselessAssign
@@ -248,7 +485,7 @@ module MnemodocServer
       include CLIOutput
       define_help description: "Show index status"
 
-      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       # ameba:disable Lint/UselessAssign
       define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
 
@@ -285,7 +522,7 @@ module MnemodocServer
       include CLIOutput
       define_help description: "Remove a file from the index"
 
-      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       # ameba:disable Lint/UselessAssign
       define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
       # ameba:disable Lint/UselessAssign
@@ -340,7 +577,7 @@ module MnemodocServer
     class PromptHook < Admiral::Command
       define_help description: "Read a client hook payload on stdin and inject the best matching passage"
 
-      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       # ameba:disable Lint/UselessAssign
       define_flag client : String, long: "client", default: "claude-code", description: "Hook client adapter (default claude-code)"
 
@@ -401,7 +638,7 @@ module MnemodocServer
       include CLIErrorHandling
       define_help description: "Select and print the role to adopt for the current context"
 
-      define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       define_flag files : Array(String), long: "files", description: "Path of a file being worked on (repeatable)"                                               # ameba:disable Lint/UselessAssign
       define_flag task : String, long: "task", default: "", description: "Kind of task (debug, implement, refactor…)"                                            # ameba:disable Lint/UselessAssign
       define_flag query : String, long: "query", default: "", description: "The user's current request or question"                                              # ameba:disable Lint/UselessAssign
@@ -572,7 +809,7 @@ module MnemodocServer
         include CLIOutput
         define_help description: "Show whether the project's daemon is running"
 
-        define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+        define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
         # ameba:disable Lint/UselessAssign
         define_flag json : Bool, long: "json", default: false, description: "Emit the result as JSON"
         # ameba:disable Lint/UselessAssign
@@ -624,7 +861,7 @@ module MnemodocServer
         include CLIOutput
         define_help description: "Stop the project's daemon"
 
-        define_flag config : String, long: "config", short: "c", default: ".mnemodoc.yml", description: "Path to config file"
+        define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
         # ameba:disable Lint/UselessAssign
         define_flag timeout : Int32, long: "timeout", default: 10, description: "Seconds to wait for the daemon to exit"
         # ameba:disable Lint/UselessAssign
@@ -682,6 +919,10 @@ module MnemodocServer
       end
     end
 
+    register_sub_command install, InstallCommand, description: "Register mnemodoc with an MCP client"
+    register_sub_command uninstall, UninstallCommand, description: "Remove mnemodoc from an MCP client"
+    register_sub_command init, Init, description: "Initialise a MnemoDoc project here"
+    register_sub_command uninit, Uninit, description: "Remove the project marker"
     register_sub_command serve, Serve, description: "Start the MCP server"
     register_sub_command index, Index, description: "Index a file or directory"
     register_sub_command search, Search, description: "Search the index"

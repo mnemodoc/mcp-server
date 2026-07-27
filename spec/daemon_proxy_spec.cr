@@ -9,8 +9,9 @@ require "file_utils"
 #      bootstrap branch and never spawn.
 #   2. Auto-spawn end to end via the built binary as a subprocess, proving the
 #      proxy bootstraps the daemon, forwards, and gets answers.
-# Each example uses a temp directory with no `paths:` so background indexing
-# is a no-op (the crawler finds nothing to embed and never contacts Ollama).
+# Each example points `paths:` at its own empty temp directory, so background
+# indexing is a no-op: the crawler finds no indexable file there and never
+# contacts Ollama.
 Spectator.describe MnemodocServer::DaemonProxy do
   # Unique temp root per example run.
   let(tmp_dir) { "/tmp/mnemodoc-proxy-#{Random::Secure.hex(4)}" }
@@ -75,6 +76,8 @@ Spectator.describe MnemodocServer::DaemonProxy do
   private def write_config
     db = File.join(tmp_dir, "index.db")
     File.write(config_path, <<-YAML)
+    paths:
+      - #{tmp_dir}
     db:
       path: #{db}
     server:

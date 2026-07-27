@@ -5,7 +5,9 @@ Spectator.describe MnemodocServer::Config do
   describe ".from_yaml" do
     it "applies defaults when YAML is empty" do
       config = MnemodocServer::Config.from_yaml("")
-      expect(config.paths).to eq(["doc/claude/", "app/"])
+      # No default layout is guessed: a globally registered server must not
+      # sweep directories a project never asked it to index.
+      expect(config.paths).to be_empty
       expect(config.ollama.host).to eq("http://localhost:11434")
       expect(config.ollama.model).to eq("nomic-embed-text")
       expect(config.ollama.batch_size).to eq(10)
@@ -431,8 +433,15 @@ Spectator.describe MnemodocServer::Config do
   end
 
   describe "#validate!" do
-    it "passes on a default config" do
-      expect { MnemodocServer::Config.from_yaml("").validate! }.not_to raise_error
+    # A default config no longer validates: `paths` has no default, so a
+    # project that configured nothing is a stated error rather than a silent
+    # sweep of directories it never asked to index.
+    it "passes once paths are configured" do
+      expect { MnemodocServer::Config.from_yaml("paths:\n  - docs/\n").validate! }.not_to raise_error
+    end
+
+    it "rejects a config that declares no paths" do
+      expect { MnemodocServer::Config.from_yaml("").validate! }.to raise_error(ArgumentError, /paths/)
     end
 
     it "raises when paths is empty" do

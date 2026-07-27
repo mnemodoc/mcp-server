@@ -69,10 +69,13 @@ The JSON-RPC 2.0 / MCP transport (stdio + HTTP) is **not in this repo**: it live
 ```
 bench/                              Token-cost benchmark (bench.cr entry, runner, report, TokenCounter, fixture corpus + annotated questions)
 src/mnemodoc-server.cr              Entry point — nothing but `CLI.run`. Compiled to the binary (`SOURCE_FILE` in mise.toml)
-src/mnemodoc_server.cr              Library root: every require, plus init_app!, open_store, run_transport, serve_stdio/sse, watch_and_index, daemon helpers. Requiring it has **no side effect** — specs and bench/ require this, never the entry point
+src/mnemodoc_server.cr              Library root: every require, plus init_app!, discover_project, project_initialized?, config_file, open_store, run_transport, serve_stdio/sse, watch_and_index, daemon helpers. Requiring it has **no side effect** — specs and bench/ require this, never the entry point
 src/mnemodoc_server/
-  cli.cr                           Admiral CLI — subcommands: serve, index, search, status, delete, context, info, prompt-hook, daemon (status/stop); CLIOutput routes each result to --json / text / --quiet
-  config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs); daemon_socket_path / daemon_lock_path
+  cli.cr                           Admiral CLI — subcommands: install, uninstall, init, uninit, serve, index, search, status, delete, context, info, prompt-hook, daemon (status/stop); CLIOutput routes each result to --json / text / --quiet
+  project.cr                       Project marker (.mnemodoc/): doc-directory detection, generated .mnemodoc.yml, marker creation/removal, shared index .gitignore
+  install/
+    claude_code.cr                 Registers/unregisters mnemodoc in ~/.claude.json + ~/.claude/settings.json (JSON::Any merge, atomic write)
+  config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs); daemon_socket_path / daemon_lock_path. `paths` has **no default** — an empty list is a validation error
   daemon.cr                        Per-project daemon: owns the SQLite index, spawns background indexing + a live file-watch (watch_and_index), serves MCP over a UNIX socket, self-exits when idle
   daemon_proxy.cr                  Default `serve --stdio` path when server.daemon is true: auto-spawns the daemon (flock-serialised), forwards JSON-RPC over the UNIX socket, self-heals on daemon death (≤3 attempts), falls back to in-process standalone on exhaustion
   helpers.cr                       version (shard version + git ref, compile-time), format_bytes
@@ -135,6 +138,57 @@ src/mnemodoc_server/
     status.cr                      status MCP tool
     context.cr                     get_project_context MCP tool (delegates to Roles::Selector)
 ```
+
+### Project resolution and the `.mnemodoc/` marker
+
+**The marker is the directory, not the YAML.** `MnemodocServer.discover_project`
+walks up from the working directory to the nearest `.mnemodoc/` and anchors
+`source_dir` there — which is enough to scope the whole stack, since `db_path`,
+`daemon_socket_path`, `daemon_lock_path` and `project_key` all derive from it.
+An explicit `--config` short-circuits discovery and its own directory becomes
+the project root; that is why every `--config` flag now defaults to `""` rather
+than `.mnemodoc.yml`.
+
+**Why it exists.** `install` registers *one* global MCP entry with no project
+path, so the server is launched in whatever directory a client session opens.
+Three things had to change for that to be safe: `paths` lost its hardcoded
+`["doc/claude/", "app/"]` default (one project's layout, applied to every
+repository), `open_store` no longer creates an index directory when no project
+was found (it serves from `Store::SQLite::MEMORY` instead), and background
+indexing is skipped in that state.
+
+**Uninitialised is a state, not an error.** `project_initialized?` is false only
+when discovery ran and found nothing. `ToolRegistry.guarded` then answers every
+tool with `UNINITIALIZED_MESSAGE` — `is_error: false`, plus
+`project_initialized: false` in the structured content. An empty result would
+read to the agent as "the documentation says nothing on this", which is a
+different and wrong statement. `init_app!` also skips `validate!` in that state,
+since `paths` is legitimately empty.
+
+**`init` is the only thing that creates the marker.** It detects documentation
+directories that actually exist (`doc`, `docs`, `documentation`, `.claude`,
+falling back to the project root), writes a minimal generated `.mnemodoc.yml`
+unless one is already there, and runs the first index. `uninit` removes the
+marker and keeps the configuration. Note the process-wide nature of
+`project_initialized?`: specs that resolve to "no project" must call
+`restore_project_state` (spec_helper) or they hand the short-circuit to whatever
+runs next under a different seed.
+
+### Registering with a client
+
+`Install::ClaudeCode` writes the MCP entry to `~/.claude.json` and the two hooks
+plus the permission entries to `~/.claude/settings.json`. Both are user-owned
+files carrying other tools' settings, so everything goes through `JSON::Any`
+read → modify → write (a typed struct would silently drop unknown keys) with an
+atomic temp-file rename. A target that exists but does not parse raises
+`Install::UnreadableTarget` and nothing is written.
+
+Two deliberate departures from `codegraph install`, which was the reference:
+`--print-config` shows **every** file it would touch, hooks and permissions
+included (codegraph's shows only the MCP entry while its install also writes a
+hook and a permission), and the permissions are the three read-only tools named
+one by one — never `mcp__mnemodoc__*`, which would grant any tool added later
+the same standing approval without anyone deciding to.
 
 ### Daemon / proxy
 
@@ -229,6 +283,9 @@ the user's critical path.
 | `status` | Server status: chunk count, Ollama config, version |
 | `get_project_context` | Select the role to adopt for the current files/task/query; returns the role's markdown + structured `role`/`reason`/`score`/`candidates` |
 
+Outside an initialised project every one of them returns the same non-error
+result inviting `mnemodoc-server init`, rather than an empty one.
+
 ## Config file format
 
 Default: `.mnemodoc.yml` (override with `--config`/`-c`).
@@ -236,6 +293,8 @@ Default: `.mnemodoc.yml` (override with `--config`/`-c`).
 Relative `paths` and the auto DB location are resolved against the **config file's directory**, not the process CWD.
 
 ```yaml
+# Required — there is no default. `mnemodoc-server init` generates this section
+# from the documentation directories it finds.
 paths:
   - doc/claude/
   - app/
@@ -292,8 +351,9 @@ server:
   daemon_watch_interval: 1  # poll interval in seconds (>= 1)
 
 db:
-  # default: .mnemodoc/index.db, beside the config file (WAL files + daemon
-  # socket/lock live there too; a self-ignoring .gitignore is written on creation)
+  # default: .mnemodoc/index.db, beside the config file. That directory is also
+  # the project marker (see "Project resolution"): WAL files + daemon
+  # socket/lock live there, and a self-ignoring .gitignore is written with it.
   # path: /custom/path/to/index.db
 ```
 
@@ -333,14 +393,19 @@ All settings can be overridden at runtime without editing the YAML file:
 
 ## Claude Code integration
 
-stdio is the default transport (`--sse` switches to HTTP), so `--stdio` is optional:
+`mnemodoc-server install` writes this; the block below is what it produces.
+stdio is the default transport (`--sse` switches to HTTP), so `--stdio` is
+optional. Note the absence of `--config`: the server discovers its project by
+walking up from the directory the client launches it in, which is what lets a
+single global entry serve every project.
 
 ```json
 {
   "mcpServers": {
-    "doc": {
+    "mnemodoc": {
+      "type": "stdio",
       "command": "/usr/local/bin/mnemodoc-server",
-      "args": ["serve", "--config", "/path/to/project/.mnemodoc.yml"]
+      "args": ["serve"]
     }
   }
 }
@@ -363,6 +428,10 @@ Key spec files:
 - `spec/crawler_spec.cr` — file scanning, mtime-based change detection
 - `spec/role_spec.cr` / `spec/selector_spec.cr` — role loading + B3 selection cascade
 - `spec/cli_context_spec.cr` — `context` subcommand end to end
+- `spec/project_discovery_spec.cr` — marker walk-up, anchoring, no index dir without a project
+- `spec/uninitialized_project_spec.cr` — every tool short-circuits with the `init` invitation
+- `spec/cli_init_spec.cr` — `init` / `uninit` end to end (marker, path detection, --force)
+- `spec/cli_install_spec.cr` — `install` / `uninstall` end to end, with HOME redirected at a temp dir
 - `spec/advisories_spec.cr` — advisory collection + dedup
 - `spec/single_flight_spec.cr` — concurrent deduplication
 - `spec/tools_spec.cr` — MCP tool behavior

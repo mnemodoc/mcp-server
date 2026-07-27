@@ -1,8 +1,12 @@
 require "./spec_helper"
+require "file_utils"
 
 Spectator.describe MnemodocServer::Advisories do
   before_each { MnemodocServer::Advisories.clear }
-  after_each { MnemodocServer::Advisories.clear }
+  after_each do
+    MnemodocServer::Advisories.clear
+    restore_project_state
+  end
 
   it "collects and exposes deduplicated advisories" do
     MnemodocServer::Advisories.add("a")
@@ -12,9 +16,12 @@ Spectator.describe MnemodocServer::Advisories do
     expect(MnemodocServer.advisories).to eq(["a", "b"])
   end
 
+  # An explicit --config naming a file that is not there: the project is taken
+  # at its word, so validation still runs and fails on the absent paths — but
+  # the advisory must have been recorded first, since it is what explains why.
   it "records a config-missing advisory when init_app! finds no config" do
     MnemodocServer::Advisories.clear
-    MnemodocServer.init_app!("/nonexistent/path/.mnemodoc.yml")
+    expect { MnemodocServer.init_app!("/nonexistent/path/.mnemodoc.yml") }.to raise_error(ArgumentError)
     expect(MnemodocServer.advisories.any?(&.includes?("no config file found"))).to be_true
   end
 
@@ -38,5 +45,19 @@ Spectator.describe MnemodocServer::Advisories do
     end
     16.times { done.receive }
     expect(MnemodocServer::Advisories.all.size).to eq(160)
+  end
+
+  # Discovery finding no project at all is a different situation from a missing
+  # file at a path the user named, and says so.
+  it "records a no-project advisory when discovery finds nothing" do
+    root = File.join(Dir.tempdir, "mnemodoc-adv-#{Random::Secure.hex(6)}")
+    begin
+      Dir.mkdir_p(root)
+      MnemodocServer::Advisories.clear
+      MnemodocServer.init_app!("", from: root)
+      expect(MnemodocServer.advisories.any?(&.includes?("no MnemoDoc project found"))).to be_true
+    ensure
+      FileUtils.rm_rf(root)
+    end
   end
 end

@@ -36,7 +36,7 @@ module MnemodocServer
             mode:  {type: "string", enum: ["hybrid", "semantic", "keyword"], description: "Search mode"},
           },
           required: ["query"],
-        }) { |args, progress| with_advisories(query.call(args, progress)) }
+        }) { |args, progress| guarded { query.call(args, progress) } }
 
       server.tool("ingest_path",
         description: "Add a file or directory to the documentation index. Call it after creating or substantially rewriting a document, or to index a path outside the configured `paths`. Indexing is incremental — files whose mtime has not changed are skipped — so re-running on a directory is cheap and safe.",
@@ -45,7 +45,7 @@ module MnemodocServer
           type:       "object",
           properties: {path: {type: "string", description: "File or directory path to index"}},
           required:   ["path"],
-        }) { |args, progress| with_advisories(ingest.call(args, progress)) }
+        }) { |args, progress| guarded { ingest.call(args, progress) } }
 
       server.tool("list_files",
         description: "List the documentation files currently indexed, with their mtime, index time and chunk count. Use it to find out which documents exist before searching, or to diagnose a query_documents search that returned nothing you expected — a file absent from this list, or indexed before its last edit, explains the miss.",
@@ -53,7 +53,7 @@ module MnemodocServer
         schema: {
           type:       "object",
           properties: {prefix: {type: "string", description: "Filter by path prefix"}},
-        }) { |args, progress| with_advisories(list.call(args, progress)) }
+        }) { |args, progress| guarded { list.call(args, progress) } }
 
       server.tool("delete_file",
         description: "Remove a document and all its passages from the index. Call it when a file has been deleted or moved and stale passages still surface in search results. It only touches the index — the file on disk is left alone.",
@@ -62,12 +62,12 @@ module MnemodocServer
           type:       "object",
           properties: {path: {type: "string", description: "File path to remove"}},
           required:   ["path"],
-        }) { |args, progress| with_advisories(delete.call(args, progress)) }
+        }) { |args, progress| guarded { delete.call(args, progress) } }
 
       server.tool("status",
         description: "Report the index's health: file and chunk counts, database path, the configured Ollama endpoint and embedding model, and the server version. Call it when searches behave unexpectedly — an empty index, or an embedding model that no longer matches the one the stored vectors were built with, accounts for most surprising results.",
         annotations: MCP::ToolAnnotations.new(read_only_hint: true),
-        schema: {type: "object", properties: {} of String => String}) { |args, progress| with_advisories(status.call(args, progress)) }
+        schema: {type: "object", properties: {} of String => String}) { |args, progress| guarded { status.call(args, progress) } }
 
       # Only offered when the project actually declares roles. Its description
       # tells the model to call it before every edit, so advertising it in a
@@ -107,8 +107,34 @@ module MnemodocServer
             task:  {type: "string", description: "Kind of task (debug, implement, refactor…)"},
             query: {type: "string", description: "The user's current request or question"},
           },
-        }) { |args, progress| with_advisories(context.call(args, progress)) }
+        }) { |args, progress| guarded { context.call(args, progress) } }
     end
+
+    # Runs a tool, unless this invocation resolved to no project at all.
+    #
+    # A single globally registered server is launched in whatever directory a
+    # client session opens, so it routinely lands outside any MnemoDoc project.
+    # Every tool then answers the same way, before touching the store: an empty
+    # result would read to the agent as "the documentation says nothing on
+    # this", which is a different — and wrong — statement. It is not an error
+    # either: the agent should fall back to its own file tools, not treat the
+    # call as broken.
+    private def self.guarded(& : -> MCP::ToolResult) : MCP::ToolResult
+      return with_advisories(yield) if MnemodocServer.project_initialized?
+
+      with_advisories(MCP::ToolResult.new(
+        content: [MCP::TextContent.new(UNINITIALIZED_MESSAGE)] of MCP::Content,
+        structured_content: JSON::Any.new({
+          "project_initialized" => JSON::Any.new(false),
+          "message"             => JSON::Any.new(UNINITIALIZED_MESSAGE),
+        } of String => JSON::Any),
+        is_error: false,
+      ))
+    end
+
+    UNINITIALIZED_MESSAGE = "This directory belongs to no MnemoDoc project, so there is no documentation index to search. " \
+                            "This is not a failure and not an empty result: nothing has been indexed here yet. " \
+                            "Use your own file tools for now, and run `mnemodoc-server init` at the project root to index it."
 
     # Merges active server advisories into a tool result's structured_content
     # warnings (union with any per-call warnings the tool already set), so every
