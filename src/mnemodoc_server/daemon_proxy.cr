@@ -265,8 +265,7 @@ module MnemodocServer
           return handler
         end
 
-        Dir.mkdir_p(File.dirname(@config.db_path))
-        store = Store::SQLite.new(@config.db_path, vec0: @config.search.backend != "qdrant")
+        store = MnemodocServer.open_store(@config)
         qi = MnemodocServer.qdrant_index(@config)
         built = ToolRegistry.build(@config, store, qi)
 

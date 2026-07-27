@@ -158,10 +158,26 @@ module MnemodocServer
   # Qdrant. Unsupported extensions are skipped here because a single-file crawler
   # root is treated as explicit and would otherwise fall back to plain text.
   # Wrapped by the caller so one bad event never breaks the watch loop.
+  # True when the path is one of the index's own files rather than a document.
+  # Since the index defaults to `.mnemodoc/` inside the project, it sits under
+  # the watched paths: the database, its SQLite sidecars and the daemon's socket
+  # and lock all raise watch events, and a delete event would otherwise issue a
+  # pointless store write on every WAL checkpoint. Matches the artifacts by name
+  # rather than the whole directory, so an explicit `db.path` pointing at a
+  # directory that also holds documents keeps indexing those documents.
+  def self.index_artifact?(path : String, config : Config) : Bool
+    db = config.db_path
+    return true if path == db || path.starts_with?("#{db}-")
+
+    path == config.daemon_socket_path || path == config.daemon_lock_path
+  end
+
   def self.handle_watch_event(event : FileWatcher::Event, config : Config, store : Store::SQLite,
                               qi : Store::QdrantIndex?, registry : Indexer::Format::Registry,
                               embedder : Indexer::Embedder, sf : SingleFlight) : Nil
     path = event.path
+    return if index_artifact?(path, config)
+
     if event.type.deleted?
       ids = store.chunk_ids_for_file(path)
       store.delete_file(path)
@@ -232,8 +248,7 @@ module MnemodocServer
     store : Store::SQLite? = nil        # ameba:disable Lint/UselessAssign
     embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
 
-    Dir.mkdir_p(File.dirname(config.db_path))
-    store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
+    store = open_store(config)
     # Non-nil binding so the background fiber captures a typed store.
     active_store = store
     qi = qdrant_index(config)
@@ -255,6 +270,15 @@ module MnemodocServer
   ensure
     embedder.try(&.close)
     store.try(&.close)
+  end
+
+  # Opens the project's index, creating its directory (and, for the derived
+  # `.mnemodoc/` location, its .gitignore) beforehand. Single entry point so
+  # every caller gets the same preparation and the same vec0 decision: the
+  # embedded KNN tables are only needed when Qdrant is not the backend.
+  def self.open_store(config : Config) : Store::SQLite
+    config.prepare_index_dir!
+    Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
   end
 
   private def self.default_config : Config

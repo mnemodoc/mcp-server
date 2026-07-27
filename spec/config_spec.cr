@@ -1,4 +1,5 @@
 require "./spec_helper"
+require "file_utils"
 
 Spectator.describe MnemodocServer::Config do
   describe ".from_yaml" do
@@ -18,9 +19,7 @@ Spectator.describe MnemodocServer::Config do
       expect(config.server.daemon?).to be_true
       expect(config.server.daemon_idle_timeout).to eq(600)
       expect(config.db.path).to eq("")
-      expect(config.db_path).to contain(Path.home.to_s)
-      expect(config.db_path).to contain("mnemodoc-server")
-      expect(config.db_path).to end_with("index.db")
+      expect(config.db_path).to end_with(File.join(".mnemodoc", "index.db"))
     end
 
     it "overrides specified fields" do
@@ -212,22 +211,94 @@ Spectator.describe MnemodocServer::Config do
   end
 
   describe "#db_path with source_dir" do
-    it "includes a hash of source_dir to avoid basename collisions" do
+    it "resolves inside the project's .mnemodoc directory" do
+      config = MnemodocServer::Config.from_yaml("")
+      config.source_dir = "/tmp/some-project"
+      expect(config.db_path).to eq("/tmp/some-project/.mnemodoc/index.db")
+    end
+
+    it "follows the project when two projects share a basename" do
       config_a = MnemodocServer::Config.from_yaml("")
       config_a.source_dir = "/home/user/work/myproject"
 
       config_b = MnemodocServer::Config.from_yaml("")
       config_b.source_dir = "/home/other/team/myproject"
 
-      # Same basename "myproject" but different absolute paths must produce different db paths
+      # Same basename "myproject" but different absolute paths must stay isolated
       expect(config_a.db_path).not_to eq(config_b.db_path)
     end
 
-    it "still ends with index.db and contains mnemodoc-server" do
+    it "falls back to Dir.current when source_dir is nil" do
       config = MnemodocServer::Config.from_yaml("")
+      config.source_dir = nil
+      expect(config.db_path).to eq(File.join(Dir.current, ".mnemodoc", "index.db"))
+    end
+
+    it "honours an explicit db.path unchanged" do
+      config = MnemodocServer::Config.from_yaml("db:\n  path: /tmp/explicit/index.db")
       config.source_dir = "/tmp/some-project"
-      expect(config.db_path).to contain("mnemodoc-server")
-      expect(config.db_path).to end_with("index.db")
+      expect(config.db_path).to eq("/tmp/explicit/index.db")
+    end
+  end
+
+  describe "#qdrant_collection" do
+    it "keeps the basename-hash project key, independent of the db location" do
+      config_a = MnemodocServer::Config.from_yaml("")
+      config_a.source_dir = "/home/user/work/myproject"
+
+      config_b = MnemodocServer::Config.from_yaml("")
+      config_b.source_dir = "/home/other/team/myproject"
+
+      expect(config_a.qdrant_collection).to start_with("myproject-")
+      expect(config_a.qdrant_collection).not_to eq(config_b.qdrant_collection)
+    end
+  end
+
+  describe "#prepare_index_dir!" do
+    it "creates the directory and writes a self-ignoring .gitignore" do
+      dir = "/tmp/mnemodoc-prepare-#{Random::Secure.hex(4)}"
+      begin
+        config = MnemodocServer::Config.from_yaml("")
+        config.source_dir = dir
+        config.prepare_index_dir!
+
+        gitignore = File.join(dir, ".mnemodoc", ".gitignore")
+        expect(Dir.exists?(File.join(dir, ".mnemodoc"))).to be_true
+        expect(File.read(gitignore)).to contain("*")
+        expect(File.read(gitignore)).to contain("!.gitignore")
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
+    it "does not overwrite an existing .gitignore" do
+      dir = "/tmp/mnemodoc-prepare-idem-#{Random::Secure.hex(4)}"
+      begin
+        config = MnemodocServer::Config.from_yaml("")
+        config.source_dir = dir
+        config.prepare_index_dir!
+
+        gitignore = File.join(dir, ".mnemodoc", ".gitignore")
+        File.write(gitignore, "custom")
+        config.prepare_index_dir!
+
+        expect(File.read(gitignore)).to eq("custom")
+      ensure
+        FileUtils.rm_rf(dir)
+      end
+    end
+
+    it "writes no .gitignore when db.path is explicit" do
+      dir = "/tmp/mnemodoc-prepare-explicit-#{Random::Secure.hex(4)}"
+      begin
+        config = MnemodocServer::Config.from_yaml("db:\n  path: #{dir}/index.db")
+        config.prepare_index_dir!
+
+        expect(Dir.exists?(dir)).to be_true
+        expect(File.exists?(File.join(dir, ".gitignore"))).to be_false
+      ensure
+        FileUtils.rm_rf(dir)
+      end
     end
   end
 
@@ -240,6 +311,13 @@ Spectator.describe MnemodocServer::Config do
     it "places daemon.lock beside the index DB" do
       config = MnemodocServer::Config.from_yaml("db:\n  path: /tmp/x/index.db")
       expect(config.daemon_lock_path).to eq("/tmp/x/daemon.lock")
+    end
+
+    it "places both inside .mnemodoc when the DB location is derived" do
+      config = MnemodocServer::Config.from_yaml("")
+      config.source_dir = "/tmp/some-project"
+      expect(config.daemon_socket_path).to eq("/tmp/some-project/.mnemodoc/daemon.sock")
+      expect(config.daemon_lock_path).to eq("/tmp/some-project/.mnemodoc/daemon.lock")
     end
   end
 

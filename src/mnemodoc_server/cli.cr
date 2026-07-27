@@ -81,7 +81,7 @@ module MnemodocServer
         store : Store::SQLite? = nil
         MnemodocServer.init_app!(flags.config)
         config = MnemodocServer.config
-        store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
+        store = MnemodocServer.open_store(config)
         embedder = Indexer::Embedder.new(config.ollama)
         registry = Indexer::Format::Registry.new(config)
         sf = SingleFlight.new
@@ -127,7 +127,7 @@ module MnemodocServer
         config.search.mode = flags.mode
         config.search.top_k = flags.top
 
-        store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
+        store = MnemodocServer.open_store(config)
         embedder = Indexer::Embedder.new(config.ollama)
 
         query_vec = embedder.embed_batch([arguments.query]).first
@@ -166,7 +166,7 @@ module MnemodocServer
         store : Store::SQLite? = nil # ameba:disable Lint/UselessAssign
         MnemodocServer.init_app!(flags.config)
         config = MnemodocServer.config
-        store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
+        store = MnemodocServer.open_store(config)
         files = store.list_files
 
         puts "mnemodoc-server #{MnemodocServer.version}"
@@ -191,7 +191,7 @@ module MnemodocServer
         store : Store::SQLite? = nil # ameba:disable Lint/UselessAssign
         MnemodocServer.init_app!(flags.config)
         config = MnemodocServer.config
-        store = Store::SQLite.new(config.db_path, vec0: config.search.backend != "qdrant")
+        store = MnemodocServer.open_store(config)
         resolved = store.indexed_path_for(arguments.path)
         if resolved.nil?
           # Distinct from the success path: a no-op, never a misleading "deleted" INFO.

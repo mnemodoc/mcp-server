@@ -224,6 +224,8 @@ mnemodoc-server info                                                       # Ver
 
 **Config paths resolve relative to the config file** — `doc/claude/` in `.mnemodoc.yml` is resolved relative to the directory that contains the config file, not the process working directory. Move the config file and the paths move with it.
 
+**Index location** — by default the index lives in `.mnemodoc/index.db`, in the directory holding the config file. That directory also holds the SQLite WAL files and the daemon's socket and lock, and receives a self-ignoring `.gitignore` on creation, so none of it can be committed by accident. Keeping the index inside the project makes it discoverable, ties its lifetime to the project, and lets it survive a rename or a move of the project directory. Set `db.path` to put the database anywhere else — useful when the project directory is read-only, lives in a folder synchronised by Dropbox/iCloud (which can corrupt a SQLite database in WAL mode), or is wiped by `git clean -xdf`. An explicit `db.path` is used verbatim and gets no `.gitignore`.
+
 **Model mismatch** — if you change `ollama.model` in the config, re-index before querying. Vectors from different models have incompatible dimensions and will silently score near-zero. `query_documents` emits a `warning` field in the response when it detects a mismatch.
 
 **Streaming ingest** — MCP clients that support progress reporting can send `Accept: text/event-stream` with a `tools/call ingest_path` request. The server streams `notifications/progress` events per file indexed, followed by the final result frame. Include `_meta.progressToken` in the request arguments to receive progress notifications:

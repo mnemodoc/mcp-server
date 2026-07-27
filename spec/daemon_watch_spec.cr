@@ -79,6 +79,46 @@ Spectator.describe "MnemodocServer daemon watch" do
     end
   end
 
+  describe "index artifacts" do
+    # The index now lives inside the project (.mnemodoc/), so it sits under the
+    # watched paths: its own files must never be treated as documents.
+    it "recognises the database, its sidecars and the daemon files" do
+      config = MnemodocServer::Config.from_yaml("db:\n  path: #{tmp_db}\npaths:\n  - #{tmp_dir}")
+      expect(MnemodocServer.index_artifact?(tmp_db, config)).to be_true
+      expect(MnemodocServer.index_artifact?("#{tmp_db}-wal", config)).to be_true
+      expect(MnemodocServer.index_artifact?("#{tmp_db}-shm", config)).to be_true
+      expect(MnemodocServer.index_artifact?("#{tmp_db}-journal", config)).to be_true
+      expect(MnemodocServer.index_artifact?(config.daemon_socket_path, config)).to be_true
+      expect(MnemodocServer.index_artifact?(config.daemon_lock_path, config)).to be_true
+    end
+
+    it "leaves ordinary documents sharing the directory alone" do
+      config = MnemodocServer::Config.from_yaml("db:\n  path: #{tmp_db}\npaths:\n  - #{tmp_dir}")
+      expect(MnemodocServer.index_artifact?(File.join(tmp_dir, "guide.md"), config)).to be_false
+    end
+
+    it "does not touch the store on a Deleted event for a sidecar" do
+      with_mock_ollama do |port|
+        h = harness(port)
+        begin
+          path = File.join(tmp_dir, "kept.md")
+          File.write(path, "# Kept\n\n## S\n\nbody")
+          MnemodocServer.handle_watch_event(FileWatcher::Event.new(path, :added),
+            h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
+
+          MnemodocServer.handle_watch_event(
+            FileWatcher::Event.new("#{tmp_db}-wal", :deleted),
+            h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
+
+          expect(h[:store].list_files.map(&.path)).to contain(path)
+        ensure
+          h[:store].close
+          h[:embedder].close
+        end
+      end
+    end
+  end
+
   it "ignores an unsupported extension" do
     with_mock_ollama do |port|
       h = harness(port)

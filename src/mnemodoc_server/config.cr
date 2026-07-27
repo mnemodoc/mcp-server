@@ -51,8 +51,9 @@ module MnemodocServer
     property daemon_watch_interval : Int32 = 1
   end
 
-  # Database location. An empty path means "derive from the project" (see
-  # Config#db_path), so each project gets an isolated index by default.
+  # Database location. An empty path means "derive from the project" — the
+  # `.mnemodoc/` directory beside the config file (see Config#db_path), so each
+  # project gets an isolated index by default.
   class DbConfig
     include YAML::Serializable
 
@@ -216,8 +217,9 @@ module MnemodocServer
     end
 
     # Resolves the database file: an explicit path (with ~ expansion) or, when
-    # unset, an XDG location derived from the config file's directory name plus
-    # a short SHA-1 hash to avoid collisions between projects sharing a basename.
+    # unset, the project's own `.mnemodoc/` directory. Keeping the index inside
+    # the project makes it discoverable, ties its lifetime to the project, and
+    # lets it survive a rename or a move of the project directory.
     def db_path : String
       return auto_db_path if @db.path.empty?
       File.expand_path(@db.path.gsub("~", Path.home.to_s))
@@ -235,16 +237,36 @@ module MnemodocServer
       File.join(File.dirname(db_path), "daemon.lock")
     end
 
-    # Default per-project database under ~/.local/share. Keyed by basename AND
-    # a short hash of the absolute source directory so two projects named the
-    # same on disk get distinct databases.
+    # Default per-project database: `.mnemodoc/index.db` beside the config file.
+    # Two projects sharing a basename stay isolated by construction, since the
+    # location IS the project rather than a hash of its path.
     private def auto_db_path : String
-      (Path.home / ".local" / "share" / "mnemodoc-server" / project_key / "index.db").to_s
+      (Path[File.expand_path(source_dir || Dir.current)] / ".mnemodoc" / "index.db").to_s
     end
 
-    # Per-project key (basename + short hash of the config dir), shared by the
-    # auto DB location and the default Qdrant collection name so two same-named
-    # projects stay isolated.
+    # Creates the directory holding the index. When the location is the derived
+    # `.mnemodoc/` one, also drops a self-ignoring .gitignore so the database,
+    # its WAL files, the daemon socket and lock can never be committed by
+    # accident. An existing .gitignore is left untouched.
+    def prepare_index_dir! : Nil
+      dir = File.dirname(db_path)
+      Dir.mkdir_p(dir)
+      return unless @db.path.empty?
+
+      gitignore = File.join(dir, ".gitignore")
+      return if File.exists?(gitignore)
+
+      File.write(gitignore, <<-IGNORE)
+        # Index data for mnemodoc-server — local to each machine, never committed.
+        *
+        !.gitignore
+
+        IGNORE
+    end
+
+    # Per-project key (basename + short hash of the config dir). Used for the
+    # default Qdrant collection name, so two same-named projects stay isolated
+    # on a shared Qdrant instance.
     private def project_key : String
       abs = File.expand_path(source_dir || Dir.current)
       "#{Path[abs].basename}-#{Digest::SHA1.hexdigest(abs)[0, 8]}"

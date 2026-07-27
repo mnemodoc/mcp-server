@@ -37,8 +37,9 @@ server:
   daemon_watch_interval: 1  # poll interval in seconds (>= 1)
 
 db:
-  # default: ~/.local/share/mnemodoc-server/<basename>-<hash>/index.db
-  #   (basename + SHA-1 prefix of the config file's directory — each project gets an isolated index)
+  # default: .mnemodoc/index.db, beside this config file
+  #   (the directory also holds the WAL files and the daemon socket/lock, and gets
+  #    a self-ignoring .gitignore so none of it can be committed by accident)
   # path: /custom/path/to/index.db
 
 index:
