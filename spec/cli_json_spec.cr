@@ -46,18 +46,25 @@ Spectator.describe "CLI machine output" do
   end
 
   describe "--json payloads" do
-    # The crawler is resilient: a file whose embedding fails is logged and
-    # skipped rather than aborting the run, so an unreachable Ollama still
-    # yields a well-formed payload and exit 0. The path argument resolves
-    # against the CWD, not the config directory, hence the absolute path.
-    it "emits the index counters" do
+    # The crawler stays resilient — a file whose embedding fails is logged and
+    # skipped rather than aborting the run — so the payload is well formed even
+    # with Ollama unreachable. The exit code is not 0 though: a run that
+    # embedded nothing at all, having tried, is a failed run, and reporting
+    # success there is how a deployment script comes to believe a broken index
+    # is current. The path argument resolves against the CWD, not the config
+    # directory, hence the absolute path.
+    it "emits the index counters, and fails when nothing could be indexed" do
       write_config
-      stdout, _, status = run_cli("index", File.join(tmp_dir, "doc"), "--config", config_path, "--json")
-      expect(status.success?).to be_true
+      stdout, stderr, status = run_cli("index", File.join(tmp_dir, "doc"), "--config", config_path, "--json")
+      expect(status.success?).to be_false
       payload = JSON.parse(stdout)
       expect(payload["indexed"].as_i).to eq(0)
       expect(payload["skipped"].as_i).to eq(0)
       expect(payload["pruned"].as_i).to eq(0)
+      expect(payload["failed"].as_i).to be > 0
+      # Errors stay on stderr and stay JSON under --json, so a consumer parsing
+      # stdout never has to tell a result from a failure.
+      expect(JSON.parse(stderr)["error"].as_s).to contain("nothing could be indexed")
     end
 
     it "emits the index status" do

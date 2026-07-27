@@ -69,6 +69,16 @@ module MnemodocServer
         annotations: MCP::ToolAnnotations.new(read_only_hint: true),
         schema: {type: "object", properties: {} of String => String}) { |args, progress| with_advisories(status.call(args, progress)) }
 
+      # Only offered when the project actually declares roles. Its description
+      # tells the model to call it before every edit, so advertising it in a
+      # project with no `context:` section bought one round-trip and one error
+      # per edit, for the whole session.
+      register_context_tool(server, context) unless config.context.roles.empty?
+
+      {server: server, embedder: embedder}
+    end
+
+    private def self.register_context_tool(server, context) : Nil
       server.tool("get_project_context",
         description: "Select which project role and conventions to adopt for the files, task and question at hand, and return that role's instructions. Call it BEFORE writing or modifying code in this project: the returned markdown carries the conventions that apply here and takes precedence over generic defaults. Pass whichever of files/task/query you have — the selection degrades gracefully when some are missing.",
         annotations: MCP::ToolAnnotations.new(read_only_hint: true),
@@ -97,8 +107,6 @@ module MnemodocServer
             query: {type: "string", description: "The user's current request or question"},
           },
         }) { |args, progress| with_advisories(context.call(args, progress)) }
-
-      {server: server, embedder: embedder}
     end
 
     # Merges active server advisories into a tool result's structured_content

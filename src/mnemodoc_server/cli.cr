@@ -117,10 +117,19 @@ module MnemodocServer
         # The crawler handles a file or a directory directly.
         expanded = File.expand_path(arguments.path)
         crawler = Indexer::Crawler.new([expanded], registry, config.exclude, qdrant_index: qi)
+        # Purging only makes sense when what follows rebuilds the whole index.
+        # Here the crawl covers one path, so clearing would empty the index,
+        # refill that path, and record the new model — erasing the mark that
+        # would have made the next full crawl rebuild the rest. Indexing without
+        # clearing is no better: it mixes vectors from two models in one index.
         if store.model_mismatch?(config.ollama.model)
-          Log.warn { "embedding model changed; clearing index for a full re-index" }
-          store.clear_index!
-          qi.try(&.clear)
+          stored = store.embedding_model || "unknown"
+          handle_error(
+            Exception.new(
+              "index was built with embedding model '#{stored}' and the configuration now uses " \
+              "'#{config.ollama.model}': every stored vector is stale. Delete #{config.db_path} " \
+              "to rebuild from scratch."),
+            json: flags.json)
         end
         qi.try { |index| MnemodocServer.ensure_qdrant!(index, store) }
         index_result = crawler.run(store, embedder, sf, concurrency: config.index.concurrency)
@@ -131,9 +140,26 @@ module MnemodocServer
           indexed: index_result[:indexed],
           skipped: index_result[:skipped],
           pruned:  index_result[:pruned],
+          failed:  index_result[:failed],
         }
         emit(payload, json: flags.json, quiet: flags.quiet) do
           puts "Indexed: #{index_result[:indexed]} files, skipped: #{index_result[:skipped]} (up to date), pruned: #{index_result[:pruned]}"
+          puts "Failed to embed: #{index_result[:failed]} chunk(s)" if index_result[:failed] > 0
+        end
+
+        # A run that embedded nothing at all, having tried, is a failure — the
+        # usual cause being an unreachable Ollama. It used to exit 0 with
+        # "Indexed: 0 files", and under --quiet with no output whatsoever, so a
+        # deployment script reading the exit code believed the index current.
+        # A run with simply nothing to do still succeeds.
+        if index_result[:failed] > 0 && index_result[:indexed] == 0
+          message = "nothing could be indexed (#{index_result[:failed]} chunk(s) failed to embed)"
+          # Same shape as every other CLI failure: JSON on stderr under --json,
+          # plain text otherwise, and stdout left to carry the counters.
+          unless flags.quiet
+            STDERR.puts(flags.json ? {"error" => message}.to_json : "Error: #{message}")
+          end
+          exit 1
         end
       rescue ex : Indexer::EmbedderError
         handle_error(ex, json: flags.json)

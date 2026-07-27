@@ -11,6 +11,13 @@ module MnemodocServer
 
       Log = ::Log.for("mnemodoc-server.tools.query")
 
+      # Upper bound on a client-supplied top_k. High enough that no legitimate
+      # request meets it, low enough that the ×4 over-fetch downstream stays
+      # well inside Int32 — the point where an absurd value used to overflow.
+      MAX_TOP_K = 1000
+
+      MODES = {"hybrid", "semantic", "keyword"}
+
       # Executes a document search.
       # Required arg: "query" (String).
       # Optional args: "top_k" (Integer, defaults to config value), "mode" (hybrid|semantic|keyword).
@@ -21,8 +28,17 @@ module MnemodocServer
       def call(args : Hash(String, JSON::Any), progress : MCP::Progress? = nil) : MCP::ToolResult
         a = MCP::Arguments.new(args)
         query = a.require_string("query")
-        top_k = a.int?("top_k").try(&.to_i) || @config.search.top_k
+        # Both of these come from a client we do not control, and both used to
+        # reach the search unchecked: a negative top_k raised ArgumentError out
+        # of Array#first, a huge one overflowed the Int32 over-fetch, and zero
+        # returned nothing at all without a word. A mode outside the set matched
+        # neither branch of the fusion, so the answer was an empty result that
+        # looked like an empty index — after paying for the embedding.
+        top_k = (a.int?("top_k").try(&.to_i) || @config.search.top_k).clamp(1, MAX_TOP_K)
         mode = a.string?("mode") || @config.search.mode
+        unless MODES.includes?(mode)
+          raise MCP::ToolError.new("mode must be one of #{MODES.join(", ")} (got #{mode.inspect})")
+        end
 
         started_at = Time.instant
 

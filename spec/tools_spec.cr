@@ -222,11 +222,14 @@ Spectator.describe "MnemodocServer tools" do
       end
     end
 
-    it "raises MCP::ToolError when no roles are configured" do
+    # The tool used to be advertised unconditionally, and its description tells
+    # the model to call it before every edit. In a project with no roles that
+    # meant one round-trip and one error per edit, for the whole session. It is
+    # simply not offered now.
+    it "is not registered at all when no roles are configured" do
       built = MnemodocServer::ToolRegistry.build(config, store)
       begin
-        expect { built[:server].dispatch("get_project_context", {"query" => JSON::Any.new("anything")}) }
-          .to raise_error(MCP::ToolError, /no roles configured/)
+        expect(built[:server].tool_definitions.map(&.name)).not_to contain("get_project_context")
       ensure
         built[:embedder].close
       end
@@ -398,6 +401,94 @@ Spectator.describe "MnemodocServer tools" do
       server.close
 
       expect(tool_result.structured_content.try(&.["indexed"].as_i)).to eq(1)
+    end
+  end
+
+  # Everything below comes from a client we do not control: an argument that is
+  # out of range must be a clear refusal or a sane value, never an internal
+  # error and never a silent empty answer.
+  describe "query_documents argument bounds" do
+    private def query_result(args)
+      built = MnemodocServer::ToolRegistry.build(config, store)
+      begin
+        built[:server].dispatch("query_documents", args)
+      ensure
+        built[:embedder].close
+      end
+    end
+
+    it "does not fail internally on a negative top_k" do
+      expect { query_result({"query" => JSON::Any.new("x"), "top_k" => JSON::Any.new(-1_i64)}) }
+        .not_to raise_error(ArgumentError)
+    end
+
+    it "does not overflow on an absurd top_k" do
+      expect { query_result({"query" => JSON::Any.new("x"), "top_k" => JSON::Any.new(600_000_000_i64)}) }
+        .not_to raise_error(OverflowError)
+    end
+
+    it "rejects a mode outside the documented set" do
+      expect { query_result({"query" => JSON::Any.new("x"), "mode" => JSON::Any.new("vector")}) }
+        .to raise_error(MCP::ToolError, /mode/)
+    end
+  end
+
+  # The corpus this server indexes is also the channel an attacker writes on: a
+  # document can ask the agent to index ~/.ssh/id_rsa, and the answer used to be
+  # yes — read, embedded, stored in plain text, and retrievable by search.
+  describe "ingest_path confinement" do
+    private def ingest(path)
+      built = MnemodocServer::ToolRegistry.build(config, store)
+      begin
+        built[:server].dispatch("ingest_path", {"path" => JSON::Any.new(path)})
+      ensure
+        built[:embedder].close
+      end
+    end
+
+    it "refuses a path outside the configured roots" do
+      outside = File.join(Dir.tempdir, "outside-#{Random::Secure.hex(4)}.md")
+      File.write(outside, "# Secret\n\nnot for the index")
+      begin
+        expect { ingest(outside) }.to raise_error(MCP::ToolError, /outside/)
+      ensure
+        File.delete(outside) rescue nil
+      end
+    end
+
+    it "still accepts a path under a configured root" do
+      inside = File.join(tmp_dir, "inside.md")
+      File.write(inside, "# Doc\n\nbody")
+      expect { ingest(inside) }.not_to raise_error(MCP::ToolError)
+    end
+  end
+
+  # Changing the embedding model invalidates every stored vector, so the index
+  # has to be rebuilt whole. Doing that from a one-file ingest emptied it and
+  # refilled a single file, then recorded the new model — erasing the very mark
+  # that would have made the next full crawl rebuild the rest.
+  describe "ingest_path after an embedding model change" do
+    it "refuses rather than wiping the index for a partial re-index" do
+      store.embedding_model = "some-other-model"
+      store.index_file("#{tmp_dir}/old.md", 1_i64, [
+        MnemodocServer::Chunk.new(file_path: "#{tmp_dir}/old.md", heading: nil, parent_heading: nil,
+          content: "existing", embedding: Array(Float32).new(768, 0.1_f32), token_count: 1, mtime: 1_i64),
+      ])
+      fresh = File.join(tmp_dir, "fresh.md")
+      File.write(fresh, "# Fresh\n\nbody")
+
+      built = MnemodocServer::ToolRegistry.build(config, store)
+      begin
+        expect { built[:server].dispatch("ingest_path", {"path" => JSON::Any.new(fresh)}) }
+          .to raise_error(MCP::ToolError, /re-index/)
+      ensure
+        built[:embedder].close
+      end
+
+      # Nothing destroyed, and the mismatch marker still stands so a full crawl
+      # will do the rebuild properly.
+      expect(store.exists?("#{tmp_dir}/old.md")).to be_true
+      expect(store.embedding_model).to eq("some-other-model")
     end
   end
 end

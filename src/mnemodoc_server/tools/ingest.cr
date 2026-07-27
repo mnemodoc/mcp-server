@@ -22,15 +22,27 @@ module MnemodocServer
       def call(args : Hash(String, JSON::Any), progress : MCP::Progress? = nil) : MCP::ToolResult
         path = MCP::Arguments.new(args).require_string("path")
         expanded = File.expand_path(path)
+        ensure_within_configured_roots(expanded)
+
+        # A changed embedding model invalidates every stored vector, so the
+        # index has to be rebuilt whole. This entry point cannot do that: it was
+        # given one path. It used to clear the index anyway, refill that single
+        # path, and record the new model — erasing the very mark that would have
+        # made the next full crawl rebuild the rest. Refusing keeps the index
+        # intact and the mismatch visible; indexing without clearing would be
+        # worse still, mixing vectors from two models in one index.
+        if @store.model_mismatch?(@config.ollama.model)
+          stored = @store.embedding_model || "unknown"
+          raise MCP::ToolError.new(
+            "index was built with embedding model '#{stored}' and the configuration now uses " \
+            "'#{@config.ollama.model}': every stored vector is stale. Run a full re-index " \
+            "(mnemodoc-server index) rather than ingesting a single path.")
+        end
 
         # Index the file or directory exactly as given; the crawler handles
         # both, and a file is indexed as itself (not its whole parent dir).
         crawler = Indexer::Crawler.new([expanded], @registry, @config.exclude)
         progress_proc = build_progress_proc(progress)
-        if @store.model_mismatch?(@config.ollama.model)
-          Log.warn { "embedding model changed; clearing index for a full re-index" }
-          @store.clear_index!
-        end
         result = crawler.run(@store, @embedder, @sf, concurrency: @config.index.concurrency, progress: progress_proc)
         @store.embedding_model = @config.ollama.model
 
@@ -47,6 +59,23 @@ module MnemodocServer
         end
 
         MCP::ToolResult.new(structured_content: JSON::Any.new(structured))
+      end
+
+      # Refuses a path that does not sit under one of the configured roots.
+      #
+      # The corpus this server indexes is also the channel an attacker writes
+      # on: a document can tell the agent to ingest ~/.aws/credentials, and the
+      # answer used to be yes — the crawler treats an explicitly named file as
+      # explicit, the registry falls back to plain text for any unknown
+      # extension, and the contents left for Ollama and then sat in the index in
+      # clear, retrievable by search. What may be indexed is a decision for the
+      # configuration, not for whatever the agent was just told to do.
+      private def ensure_within_configured_roots(expanded : String) : Nil
+        roots = @config.resolved_paths
+        return if roots.any? { |root| expanded == root || expanded.starts_with?(root.chomp(File::SEPARATOR) + File::SEPARATOR) }
+        raise MCP::ToolError.new(
+          "#{expanded} is outside the configured paths; add its directory to `paths:` " \
+          "in the configuration file to make it indexable")
       end
 
       # Bridges MCP::Progress to the crawler's (indexed, total, file_path) proc.
