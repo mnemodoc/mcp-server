@@ -13,6 +13,18 @@ private class RaisingStore < MnemodocServer::Store::SQLite
   end
 end
 
+# Same idea for delete_file: raises between the virtual-index cleanup and the
+# DELETE, i.e. exactly in the window where the two used to be separate
+# statements on separate pooled connections.
+private class RaisingDeleteStore < MnemodocServer::Store::SQLite
+  class Boom < Exception
+  end
+
+  protected def after_virtual_cleanup(path : String) : Nil
+    raise Boom.new("forced failure after virtual index cleanup")
+  end
+end
+
 Spectator.describe MnemodocServer::Store::SQLite do
   let(tmp_db) { "/tmp/mnemodoc-test-#{Random::Secure.hex(4)}.db" }
   subject(store) { MnemodocServer::Store::SQLite.new(tmp_db) }
@@ -484,6 +496,40 @@ Spectator.describe MnemodocServer::Store::SQLite do
       ensure
         store.close
         File.delete(db) rescue nil
+      end
+    end
+
+    # The counterpart for deletion. cleanup_virtual_indexes and the DELETE used
+    # to be two separate statements outside any transaction, so a failure in
+    # between — a busy timeout under concurrent writes is enough — emptied vec0
+    # and FTS5 while leaving the files row and its chunks in place. The file
+    # then still counted as indexed at its recorded mtime, so it was never
+    # re-crawled, and it had no searchable entries left: silently unreachable.
+    # Unlike clear_index!, that half-state does not repair itself, since the
+    # startup backfill only runs when the virtual table is entirely empty.
+    it "rolls back the virtual index cleanup when the delete fails (atomicity)" do
+      embedding = Array(Float32).new(768, 0.3_f32)
+      store.index_file("doc/del.md", 1000_i64, [
+        MnemodocServer::Chunk.new(file_path: "doc/del.md", heading: "## H", parent_heading: nil,
+          content: "searchable body", embedding: embedding, token_count: 1, mtime: 1000_i64),
+      ])
+      expect(store.vec_chunk_count).to eq(1)
+      expect(store.fts_chunk_count).to eq(1)
+      store.close
+
+      raising_store = RaisingDeleteStore.new(tmp_db)
+      expect { raising_store.delete_file("doc/del.md") }.to raise_error(RaisingDeleteStore::Boom)
+      raising_store.close
+
+      verifier = MnemodocServer::Store::SQLite.new(tmp_db)
+      begin
+        # Either the file is gone entirely, or it is still fully searchable.
+        # What must not survive is a files row whose search entries are missing.
+        expect(verifier.exists?("doc/del.md")).to be_true
+        expect(verifier.vec_chunk_count).to eq(1)
+        expect(verifier.fts_chunk_count).to eq(1)
+      ensure
+        verifier.close
       end
     end
   end

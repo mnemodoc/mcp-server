@@ -171,4 +171,40 @@ Spectator.describe MnemodocServer::Daemon do
       end
     end
   end
+
+  # A socket that accepts and then says nothing is not a theoretical case: the
+  # daemon does its SQLite writes through blocking C calls that never yield, so
+  # during a large vec0 backfill the process holds the listening socket while
+  # answering nothing. The kernel completes the connection from the backlog and
+  # the client waits — with no read timeout, forever, and the MCP client that
+  # spawned the proxy hangs with it, without a message.
+  describe "liveness probe against an unresponsive socket" do
+    it "reports not running instead of waiting forever" do
+      Dir.mkdir_p(File.dirname(config.daemon_socket_path))
+      server = UNIXServer.new(config.daemon_socket_path)
+      accepted = [] of UNIXSocket
+      spawn do
+        while socket = server.accept?
+          # Held open on purpose: accepted, never answered.
+          accepted << socket
+        end
+      end
+      Fiber.yield
+
+      answer = Channel(Bool).new
+      spawn { answer.send(MnemodocServer.daemon_healthy?(config)) }
+
+      outcome = select
+      when value = answer.receive
+        value ? "running" : "not running"
+      when timeout(15.seconds)
+        "hung"
+      end
+      expect(outcome).to eq("not running")
+    ensure
+      accepted.each(&.close) if accepted
+      server.close if server
+      File.delete?(config.daemon_socket_path)
+    end
+  end
 end

@@ -180,8 +180,17 @@ module MnemodocServer
     # POSTs *body* to the daemon's /mcp endpoint over a fresh UNIX socket and
     # returns the response body. The socket is always closed. Connection errors
     # may propagate here (a later lot wraps this with retry/fallback).
+    # Upper bound on one forwarded request. Generous, because a legitimate query
+    # waits on Ollama, but finite: a daemon parked in a blocking SQLite write
+    # accepts the connection and answers nothing, and an unbounded wait there
+    # freezes the client with no error to show for it. Exceeding it surfaces as
+    # an IO error, which the healing path already reads as a dead daemon.
+    REQUEST_TIMEOUT = 120.seconds
+
     private def post(body : String) : String
       socket = UNIXSocket.new(@config.daemon_socket_path)
+      socket.read_timeout = REQUEST_TIMEOUT
+      socket.write_timeout = REQUEST_TIMEOUT
       client = HTTP::Client.new(socket)
       begin
         response = client.post(

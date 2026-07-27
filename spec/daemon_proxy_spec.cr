@@ -99,10 +99,18 @@ Spectator.describe MnemodocServer::DaemonProxy do
         lines = output.to_s.lines.reject(&.blank?)
         expect(lines.size).to eq(2)
 
-        init_resp = JSON.parse(lines[0])
+        # Matched by id, not by position. The proxy dispatches each line in its
+        # own fiber and writes replies as they come back, so their order is the
+        # order they completed in — which is what JSON-RPC ids are for. Asserting
+        # position made this example depend on the daemon answering `status`
+        # slower than `initialize`, and it eventually stopped doing so.
+        by_id = lines.map { |line| JSON.parse(line) }.to_h { |resp| {resp["id"].as_i, resp} }
+        expect(by_id.keys.sort!).to eq([1, 2])
+
+        init_resp = by_id[1]
         expect(init_resp["result"]["protocolVersion"].as_s).not_to be_empty
 
-        status_resp = JSON.parse(lines[1])
+        status_resp = by_id[2]
         sc = status_resp.dig("result", "structuredContent")
         expect(sc["status"].as_s).to eq("ok")
       ensure

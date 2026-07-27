@@ -104,9 +104,23 @@ module MnemodocServer
   # backend, then re-runs setup. Wired to SIGUSR1 so `logrotate` can rotate the
   # log file and have the server resume writing to the fresh one.
   def self.reopen_log_file! : Nil
+    # The old handle is closed, not merely dropped: without that, each rotation
+    # leaked a descriptor and kept the rotated file alive on disk, so logrotate
+    # freed nothing and a long-lived daemon climbed towards its limit.
+    #
+    # It is closed LAST, though. This runs from a signal handler while request
+    # fibers are logging, so between closing and rebinding there must be no
+    # moment where the live backend points at a closed descriptor — a write
+    # there raises inside whatever fiber happened to log, killing it.
+    previous_file = @@log_file
+    previous_backend = @@logger
     @@log_file = nil
     @@logger = nil
     setup_log!
+    # The backend goes too: it owns an async dispatcher fiber, so dropping it
+    # without closing leaked one of those per rotation on top of the descriptor.
+    previous_backend.try(&.close)
+    previous_file.try(&.close) unless previous_file.nil? || previous_file.same?(STDERR) || previous_file.same?(STDOUT)
   end
 
   # Builds the Qdrant index when the qdrant backend is selected, else nil.
@@ -160,8 +174,17 @@ module MnemodocServer
   # True when a daemon is listening on the project's socket and answering the
   # transport's liveness probe. The single source of truth for "is it running":
   # the pid file alone cannot say, since a hard kill leaves it behind.
+  # Seconds the liveness probe waits for an answer. A socket that accepts and
+  # then says nothing is not theoretical: the daemon's SQLite writes are
+  # blocking C calls that never yield, so during a large backfill it holds the
+  # listening socket while answering nothing. Without this bound the probe waits
+  # forever, and the MCP client that spawned the proxy hangs with it.
+  HEALTH_PROBE_TIMEOUT = 5.seconds
+
   def self.daemon_healthy?(config : Config) : Bool
     socket = UNIXSocket.new(config.daemon_socket_path)
+    socket.read_timeout = HEALTH_PROBE_TIMEOUT
+    socket.write_timeout = HEALTH_PROBE_TIMEOUT
     client = HTTP::Client.new(socket)
     begin
       client.get("/health").status_code == 200

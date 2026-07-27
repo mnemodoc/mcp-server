@@ -167,12 +167,31 @@ module MnemodocServer
       # Removes a file; its chunks are dropped automatically via ON DELETE
       # CASCADE. Returns the number of rows deleted (0 when the path was not
       # indexed, 1 on success).
+      # The virtual-index cleanup and the DELETE share ONE transaction on ONE
+      # connection. As two separate statements they could half-succeed — a busy
+      # timeout under concurrent writes is enough — emptying vec0 and FTS5 while
+      # leaving the files row and its chunks behind. The file then still counted
+      # as indexed at its recorded mtime, so no crawl ever revisited it, and it
+      # had no search entries left: present, unreachable, and silent about it.
+      # That half-state does not repair itself either, since the startup
+      # backfill only fires when the virtual table is entirely empty.
       def delete_file(path : String) : Int64
         @write_mutex.synchronize do
-          cleanup_virtual_indexes(@db, path)
-          result = @db.exec("DELETE FROM files WHERE path = ?", path)
-          result.rows_affected
+          rows = 0_i64
+          @db.transaction do |tx|
+            cnn = tx.connection
+            cleanup_virtual_indexes(cnn, path)
+            after_virtual_cleanup(path)
+            rows = cnn.exec("DELETE FROM files WHERE path = ?", path).rows_affected
+          end
+          rows
         end
+      end
+
+      # Test-only seam, mirroring after_file_upsert: fires inside the delete
+      # transaction, between the virtual-index cleanup and the DELETE, so a spec
+      # can prove the two roll back together. No-op in production.
+      protected def after_virtual_cleanup(path : String) : Nil
       end
 
       # Returns all indexed file paths as a lightweight string array, without
