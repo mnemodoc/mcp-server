@@ -10,6 +10,11 @@
 # Ignore MacOS files
 .DS_Store
 
+# Local secrets (ANTHROPIC_API_KEY for the token benchmark). Never committed.
+/.env
+/.env.*
+!/.env.example
+
 # Ignore mnemodoc-server runtime data. The index itself lives in .mnemodoc/,
 # which carries its own self-ignoring .gitignore written at creation time.
 *.log
