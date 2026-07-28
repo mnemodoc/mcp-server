@@ -59,9 +59,9 @@ Spectator.describe MnemodocServer::Indexer::Format::Pdf do
     handler = MnemodocServer::Indexer::Format::Pdf.new(
       MnemodocServer::Indexer::ChunkAssembler.new, command: hang, timeout: 1.second)
     begin
-      started = Time.monotonic
+      started = Time.instant
       chunks = handler.extract(pdf, 1_i64)
-      elapsed = Time.monotonic - started
+      elapsed = Time.instant - started
       expect(chunks).to be_empty
       expect(elapsed).to be < 30.seconds
     ensure
