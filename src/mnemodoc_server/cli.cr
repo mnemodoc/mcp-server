@@ -422,13 +422,20 @@ module MnemodocServer
         # which the PreToolUse hook consumes as the role markdown). Fixed format:
         # every field is always present (empty when absent) so log parsing stays
         # stable across flags-only and hook-stdin modes.
+        # The user's own words are NOT on this line. It runs at the default
+        # level, and `server.log_file` is often a real file that outlives the
+        # session — a prompt carrying a token or a customer name would be
+        # written there in clear and stay. The length is enough to correlate an
+        # entry with a turn; the text itself moves down to debug, which an
+        # operator turns on deliberately and briefly.
         Log.for("mnemodoc-server.context").info {
           "event=#{input.event} role=#{selection.role.name} reason=#{selection.reason.inspect}" \
           " session=#{input.session_id} agent=#{input.agent_label.inspect}" \
-          " files=#{input.files.inspect} task=#{input.task.inspect} query=#{input.query.inspect}"
+          " files=#{input.files.size} task=#{input.task.inspect} query_len=#{input.query.size}"
         }
         Log.for("mnemodoc-server.context").debug {
-          "transcript=#{input.transcript_path.inspect} cwd=#{input.cwd.inspect}"
+          "transcript=#{input.transcript_path.inspect} cwd=#{input.cwd.inspect}" \
+          " files=#{input.files.inspect} query=#{input.query.inspect}"
         }
         # The role markdown goes to stdout verbatim so the hook injects it as-is.
         # Exception: on UserPromptSubmit (query channel), an undecided prompt that

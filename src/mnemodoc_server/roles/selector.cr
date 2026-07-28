@@ -61,6 +61,7 @@ module MnemodocServer
       def initialize(@roles : Array(Role), @default : Role?, @embedder : Indexer::Embedder?,
                      @base_dir : String? = nil)
         @desc_cache = {} of String => Array(Float32)
+        @desc_mutex = Mutex.new
       end
 
       # Builds a selector from the context section of the config, resolving each
@@ -187,8 +188,22 @@ module MnemodocServer
         {role: best, cosine: best_cosine}
       end
 
+      # Cached per role FILE, not per role name: names are basenames, so
+      # doc/backend/lead.md and doc/frontend/lead.md are both "lead" and the
+      # second used to be ranked on the first's description.
+      #
+      # The memoisation is also guarded. `||=` around an embedding call spans a
+      # network round-trip, i.e. a yield point: one Selector serves up to 32
+      # concurrent daemon requests, so two of them would both find the cache
+      # empty and both call Ollama — and under -Dpreview_mt, both write into the
+      # Hash at once.
       private def description_embedding(embedder : Indexer::Embedder, role : Role) : Array(Float32)
-        @desc_cache[role.name] ||= embedder.embed_batch([role.config.description]).first
+        key = role.resolved_file
+        if cached = @desc_mutex.synchronize { @desc_cache[key]? }
+          return cached
+        end
+        embedding = embedder.embed_batch([role.config.description]).first
+        @desc_mutex.synchronize { @desc_cache[key] ||= embedding }
       end
 
       private def rule_reason(role : Role, files : Array(String), task : String, query : String, score : Int32) : String

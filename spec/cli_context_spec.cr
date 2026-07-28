@@ -177,4 +177,30 @@ Spectator.describe "context CLI command" do
     expect(log_content).to contain("session=")
     expect(log_content).to contain("agent=")
   end
+
+  # server.log_file is frequently a real file, kept far longer than the session
+  # that wrote it. The audit line runs at the default level, so anything it
+  # carries is on disk in clear: a prompt is the user's own words, and those
+  # routinely contain a token, a customer name, an internal hostname.
+  describe "what the audit trail records" do
+    it "records that a prompt was handled, not what it said" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      secret = "sk-live-#{Random::Secure.hex(8)}"
+      # A query that fires the `policies` role, so the selection succeeds and
+      # the audit line is actually written.
+      payload = {hook_event_name: "UserPromptSubmit", prompt: "policy question, token #{secret}"}.to_json
+
+      Process.run(binary, ["context", "--hook-stdin", "--config", config_path],
+        input: IO::Memory.new(payload),
+        output: Process::Redirect::Close, error: Process::Redirect::Close)
+
+      log = File.exists?(log_path) ? File.read(log_path) : ""
+      expect(log).not_to be_empty
+      expect(log).not_to contain(secret)
+      # The turn is still traceable: the event and the prompt's length are there.
+      expect(log).to contain("event=UserPromptSubmit")
+      expect(log).to contain("query_len=")
+    end
+  end
 end

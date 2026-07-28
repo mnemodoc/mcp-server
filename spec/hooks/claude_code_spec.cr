@@ -64,4 +64,25 @@ Spectator.describe MnemodocServer::Hooks::ClaudeCode do
     expect(input.query).to eq("")
     expect(input.session_id).to be_nil
   end
+
+  # The adapter's contract says it must not raise on missing or extra keys, and
+  # a hook payload is whatever the client sends. JSON::Any#[]? looks lenient but
+  # raises on a receiver that is neither a hash nor nil, so a root that is an
+  # array or a scalar took the whole `context` command down — in the middle of a
+  # PreToolUse hook, in front of the user.
+  describe "a payload that is valid JSON but not an object" do
+    it "yields an empty input instead of raising" do
+      [%([]), %("just a string"), %(null), %(42)].each do |body|
+        input = MnemodocServer::Hooks::ClaudeCode.new.parse(JSON.parse(body))
+        expect(input.files).to be_empty
+        expect(input.query).to be_empty
+      end
+    end
+
+    it "survives a tool_input that is not an object" do
+      body = %({"hook_event_name": "PreToolUse", "tool_input": ["oops"]})
+      input = MnemodocServer::Hooks::ClaudeCode.new.parse(JSON.parse(body))
+      expect(input.files).to be_empty
+    end
+  end
 end

@@ -160,4 +160,31 @@ Spectator.describe MnemodocServer::Roles::Selector do
     selection = selector.select(["/tmp/foo.rb"], "", "")
     expect(selection.role.name).to eq("generalist")
   end
+
+  # Role names are basenames, so two roles living in different directories can
+  # carry the same one. The description cache was keyed on that name, so the
+  # second role reused the first's embedding and the tie-break ranked it on
+  # somebody else's description — quietly picking the wrong conventions.
+  describe "two roles with the same file basename" do
+    private def lead(dir : String, description : String) : MnemodocServer::Roles::Role
+      cfg = MnemodocServer::RoleConfig.new(
+        file: "#{dir}/lead.md", description: description,
+        when_query: ["question"], when_files: [] of String, when_task: [] of String,
+      )
+      MnemodocServer::Roles::Role.new(cfg, "/nonexistent/#{dir}/lead.md")
+    end
+
+    it "ranks each on its own description" do
+      backend = lead("backend", "crystal conventions")
+      frontend = lead("frontend", "rails conventions")
+
+      with_mock_embedder do |embedder|
+        selector = MnemodocServer::Roles::Selector.new([backend, frontend], nil, embedder)
+        # The bundle speaks of rails, so the frontend role must win. With the
+        # cache collision it inherited backend's crystal vector and lost.
+        selection = selector.select([] of String, "", "question about rails")
+        expect(selection.role.config.file).to eq("frontend/lead.md")
+      end
+    end
+  end
 end

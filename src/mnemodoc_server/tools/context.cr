@@ -45,8 +45,12 @@ module MnemodocServer
         )
       rescue Roles::NoRolesError
         raise MCP::ToolError.new("no roles configured in context section")
-      rescue Roles::NeedSignalError
-        raise MCP::ToolError.new("need at least one of files/task/query (no default set)")
+      rescue ex : Roles::NeedSignalError
+        # Propagated, not replaced: the same error is raised for two different
+        # situations, and the fixed text described only one of them. With roles
+        # configured but no embedder reachable, the caller was told to pass
+        # files/task/query — which it had passed.
+        raise MCP::ToolError.new(ex.message || "need at least one of files/task/query (no default set)")
       rescue ex : File::Error
         raise MCP::ToolError.new("role file not found: #{ex.message}")
       rescue ex : Indexer::EmbedderError
