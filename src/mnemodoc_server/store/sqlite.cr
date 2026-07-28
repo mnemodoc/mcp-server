@@ -13,6 +13,8 @@ module MnemodocServer
 
       @db : DB::Database
       @write_mutex = Mutex.new
+      @count_mutex = Mutex.new
+      @chunk_count : Int64? = nil
 
       # Five tables: `files` tracks indexed paths and their mtime for change
       # detection; `chunks` holds the embedded sections, cascade-deleted when
@@ -120,6 +122,7 @@ module MnemodocServer
       # Replaces all chunks for the affected files in a single transaction.
       def save_chunks(chunks : Array(Chunk)) : Nil
         return if chunks.empty?
+        invalidate_chunk_count
         @write_mutex.synchronize do
           write_chunks_transaction(chunks)
         end
@@ -132,6 +135,7 @@ module MnemodocServer
       # connection, so a crash or exception mid-write can never leave an orphan
       # files row (which would make file_indexed? wrongly skip re-indexing).
       def index_file(path : String, mtime : Int64, chunks : Array(Chunk)) : Nil
+        invalidate_chunk_count
         @write_mutex.synchronize do
           now = Time.utc.to_unix
           @db.transaction do |tx|
@@ -157,6 +161,7 @@ module MnemodocServer
       # index, and the FTS index. Used when the embedding model changes so the
       # next crawl re-indexes every file with the new model.
       def clear_index! : Nil
+        invalidate_chunk_count
         @write_mutex.synchronize do
           @db.exec("DELETE FROM vec_chunks")
           @db.exec("DELETE FROM chunks_fts")
@@ -176,6 +181,7 @@ module MnemodocServer
       # That half-state does not repair itself either, since the startup
       # backfill only fires when the virtual table is entirely empty.
       def delete_file(path : String) : Int64
+        invalidate_chunk_count
         @write_mutex.synchronize do
           rows = 0_i64
           @db.transaction do |tx|
@@ -272,8 +278,19 @@ module MnemodocServer
         !stored.nil? && stored != current
       end
 
+      # Memoised, because query_documents reports it on every single search and
+      # a COUNT(*) walks the table. Invalidated by each write path below, so a
+      # stale value cannot outlive the change that made it stale.
       def chunk_count : Int64
-        @db.query_one("SELECT COUNT(*) FROM chunks", as: Int64)
+        @count_mutex.synchronize do
+          @chunk_count ||= @db.query_one("SELECT COUNT(*) FROM chunks", as: Int64)
+        end
+      end
+
+      # Called by every mutation. Cheaper and far harder to get wrong than
+      # adjusting the cached number by hand at each site.
+      private def invalidate_chunk_count : Nil
+        @count_mutex.synchronize { @chunk_count = nil }
       end
 
       # Number of rows in the vec0 index. Used by specs to assert the vec index
@@ -394,6 +411,27 @@ module MnemodocServer
       # backfill (parallel to backfill_vec_chunks).
       def stored_embeddings : Array({id: Int64, vector: Array(Float32)})
         read_embeddings("SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL AND length(embedding) > 0")
+      end
+
+      # The same rows, handed over one batch at a time. The upsert that consumes
+      # them was already batched; the read was not, so the whole corpus of
+      # vectors was resident before the first batch left — around 150 MB for
+      # 50 000 chunks, at daemon startup.
+      def each_stored_embedding_batch(size : Int32, & : Array({id: Int64, vector: Array(Float32)}) -> Nil) : Nil
+        batch = [] of {id: Int64, vector: Array(Float32)}
+        @db.query("SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL AND length(embedding) > 0") do |result_set|
+          result_set.each do
+            id = result_set.read(Int64)
+            blob = result_set.read(Bytes)
+            next if blob.empty?
+            batch << {id: id, vector: deserialize_embedding(blob)}
+            if batch.size >= size
+              yield batch
+              batch = [] of {id: Int64, vector: Array(Float32)}
+            end
+          end
+        end
+        yield batch unless batch.empty?
       end
 
       # Shared (id, embedding-BLOB → Array(Float32)) reader for the two methods

@@ -16,8 +16,10 @@ module MnemodocServer
     class Embedder
       Log = ::Log.for("mnemodoc-server.indexer.embedder")
 
-      def initialize(@config : OllamaConfig)
-        @pool = ConnectionPool.new(@config.timeout)
+      # idle_connections: how many clients the pool keeps per host. The indexing
+      # paths pass their concurrency, so a worker always finds one waiting.
+      def initialize(@config : OllamaConfig, idle_connections : Int32 = ConnectionPool::IDLE_PER_HOST)
+        @pool = ConnectionPool.new(@config.timeout, idle_connections)
         @uri = URI.parse(@config.host)
       end
 

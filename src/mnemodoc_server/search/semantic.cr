@@ -26,12 +26,16 @@ module MnemodocServer
         dot_val / (Math.sqrt(norm_a) * Math.sqrt(norm_b))
       end
 
-      # Scores all chunks against the query vector and returns the best
-      # candidates with their 1-based rank (an over-fetch of top_k * 4 feeds the
-      # downstream RRF fusion). The query is normalized to unit length once;
+      # Scores all chunks against the query vector and returns the best of them
+      # with their 1-based rank. The query is normalized to unit length once;
       # stored chunk embeddings are already unit-length, so scoring is a plain
       # dot product. Scores remain Float64.
-      def search(query_vec : Array(Float32), chunks : Array(Chunk), top_k : Int32) : Array({chunk: Chunk, score: Float64, rank: Int32})
+      #
+      # `candidates` and not `top_k`: this overload widens the ask by four, the
+      # other two honour it as given. Three same-named methods disagreeing on
+      # what one parameter means is what produced the double over-fetch on the
+      # vec0 path.
+      def search(query_vec : Array(Float32), chunks : Array(Chunk), candidates : Int32) : Array({chunk: Chunk, score: Float64, rank: Int32})
         normalized_query = normalize(query_vec)
         scored = chunks.map do |chunk|
           score = dot(normalized_query, chunk.embedding)
@@ -39,7 +43,7 @@ module MnemodocServer
         end
 
         scored.sort_by! { |item| -item[:score] }
-        scored.first(top_k * 4).each_with_index.map do |item, idx|
+        scored.first(candidates * 4).each_with_index.map do |item, idx|
           {chunk: item[:chunk], score: item[:score], rank: idx + 1}
         end.to_a
       end

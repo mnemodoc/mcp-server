@@ -248,7 +248,7 @@ tuned only on real questions never sees.
 
 ### Machine-readable output
 
-Every subcommand except `serve` accepts `--json`, emitting its result as a single JSON object on stdout:
+Every subcommand that returns a result accepts `--json` — `index`, `search`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not: one streams a protocol, the other writes a passage for a client hook to consume verbatim., emitting its result as a single JSON object on stdout:
 
 ```sh
 $ mnemodoc-server status --json

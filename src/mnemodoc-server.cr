@@ -10,6 +10,10 @@ require "./mnemodoc_server"
 begin
   MnemodocServer::CLI.run
 rescue e : Exception
-  STDERR.puts e.message
+  # Class and backtrace, not just the message: an exception whose message is
+  # nil printed a blank line, and even a good message says nothing about where
+  # it came from. This is the only diagnosis a user gets when the server fails
+  # under an MCP client, which shows them nothing else.
+  STDERR.puts e.inspect_with_backtrace
   exit 1
 end

@@ -61,7 +61,7 @@ Spectator.describe MnemodocServer::Search do
       far_with_vec = MnemodocServer::Chunk.new(far.file_path, far.heading, far.parent_heading, far.content, [0.0_f32, 1.0_f32, 0.0_f32], 1, far.mtime)
 
       semantic = MnemodocServer::Search::Semantic.new
-      results = semantic.search(query_vec, [close_with_vec, far_with_vec], top_k: 2)
+      results = semantic.search(query_vec, [close_with_vec, far_with_vec], candidates: 2)
       expect(results.first[:chunk].content).to eq("close")
     end
   end

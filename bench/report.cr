@@ -45,7 +45,9 @@ module Bench
     @[JSON::Field(key: "questions")]
     getter outcomes : Array(QuestionOutcome)
 
-    def initialize(@mode, @baseline_cost, @top_k, @outcomes, @threshold = 0.0)
+    getter? exact : Bool
+
+    def initialize(@mode, @baseline_cost, @top_k, @outcomes, @threshold = 0.0, @exact = false)
     end
 
     # Questions the hook was meant to fire on: recall and cost are computed on
@@ -118,8 +120,14 @@ module Bench
     end
 
     # A saving only means something if the answers came back with it.
+    # A run is worth reading when it retrieved something relevant AND did not
+    # simply fire on everything. Recall alone was not enough: a threshold of
+    # zero injects on every off-topic prompt too, and that run came out
+    # "meaningful" with a fine recall and a saving to match.
+    MAX_FALSE_FIRE_RATE = 0.5
+
     def meaningful? : Bool
-      recall > 0.0 && mean_retrieved > 0
+      recall > 0.0 && mean_retrieved > 0 && false_fire_rate <= MAX_FALSE_FIRE_RATE
     end
 
     def to_s(io : IO) : Nil
@@ -140,17 +148,34 @@ module Bench
       io << (hook_accuracy * 100).round(1) << " % of the time\n"
 
       unless meaningful?
-        io << "\n  ⚠ NOT MEANINGFUL — recall is zero, so the saving above only reflects\n"
-        io << "    that little or nothing was returned. Do not read it as a result.\n"
+        if recall > 0.0 && mean_retrieved > 0
+          io << "\n  ⚠ NOT MEANINGFUL — the hook fires on #{(false_fire_rate * 100).round(1)} % of\n"
+          io << "    off-topic prompts, so the recall above is bought by injecting on\n"
+          io << "    everything. Raise hook.similarity_threshold.\n"
+        else
+          io << "\n  ⚠ NOT MEANINGFUL — recall is zero, so the saving above only reflects\n"
+          io << "    that little or nothing was returned. Do not read it as a result.\n"
+        end
       end
 
       io << "\nPer question:\n"
       @outcomes.each do |outcome|
-        io << (outcome.hit? ? "  ✓ " : "  ✗ ")
-        io << outcome.retrieved_cost.to_s.rjust(6) << "  " << outcome.question << '\n'
-        unless outcome.hit?
-          io << "           expected " << outcome.expected_file << " › " << outcome.expected_heading << '\n'
-          io << "           returned " << (outcome.returned.empty? ? "(nothing)" : outcome.returned.join(", ")) << '\n'
+        # An off-topic prompt has no expected passage: its annotation carries an
+        # arbitrary one, for schema uniformity only. Judging it on `hit?` marked
+        # it ✗ for failing to find something it was never meant to find — and ✓
+        # when the search happened to return that arbitrary passage. What is
+        # being asked of these is whether the hook stayed quiet.
+        if outcome.expect_fire?
+          io << (outcome.hit? ? "  ✓ " : "  ✗ ")
+          io << outcome.retrieved_cost.to_s.rjust(6) << "  " << outcome.question << '\n'
+          unless outcome.hit?
+            io << "           expected " << outcome.expected_file << " › " << outcome.expected_heading << '\n'
+            io << "           returned " << (outcome.returned.empty? ? "(nothing)" : outcome.returned.join(", ")) << '\n'
+          end
+        else
+          io << (outcome.fired? ? "  ✗ " : "  ✓ ")
+          io << outcome.retrieved_cost.to_s.rjust(6) << "  " << outcome.question << " (off-topic)" << '\n'
+          io << "           the hook fired on it; it should have stayed quiet\n" if outcome.fired?
         end
       end
     end
@@ -160,7 +185,11 @@ module Bench
     def to_json(json : JSON::Builder) : Nil
       json.object do
         json.field "mode", @mode
-        json.field "exact", !@mode.starts_with?("characters")
+        # Taken from the counter, not inferred from its human-readable label:
+        # rewording that label would have flipped this field silently, telling
+        # a consumer it was reading real token counts when it was reading
+        # characters.
+        json.field "exact", exact?
         json.field "baseline_cost", @baseline_cost
         json.field "top_k", @top_k
         json.field "mean_retrieved", mean_retrieved

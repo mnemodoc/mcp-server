@@ -109,7 +109,7 @@ module MnemodocServer
         MnemodocServer.init_app!(flags.config)
         config = MnemodocServer.config
         store = MnemodocServer.open_store(config)
-        embedder = Indexer::Embedder.new(config.ollama)
+        embedder = Indexer::Embedder.new(config.ollama, idle_connections: config.index.concurrency)
         registry = Indexer::Format::Registry.new(config)
         sf = SingleFlight.new
         qi = MnemodocServer.qdrant_index(config)

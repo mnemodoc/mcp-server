@@ -5,9 +5,13 @@ module MnemodocServer
   # the default indexing concurrency so workers reuse connections instead of
   # constantly reopening them.
   class ConnectionPool
+    # Default cap on idle clients per host. Overridable, because the useful
+    # value is the indexing concurrency: below it, workers close a connection at
+    # checkin and reopen one at the next checkout — precisely what the pool
+    # exists to avoid.
     IDLE_PER_HOST = 8
 
-    def initialize(@timeout : Int32 = 30)
+    def initialize(@timeout : Int32 = 30, @idle_per_host : Int32 = IDLE_PER_HOST)
       @idle = {} of String => Array(HTTP::Client)
       @mutex = Mutex.new
     end
@@ -17,7 +21,7 @@ module MnemodocServer
       key = host_key(uri)
       @mutex.synchronize do
         pool = (@idle[key] ||= [] of HTTP::Client)
-        pool.size < IDLE_PER_HOST ? pool.push(client) : client.close
+        pool.size < @idle_per_host ? pool.push(client) : client.close
       end
     end
 

@@ -21,7 +21,14 @@ module Bench
   OptionParser.parse do |parser|
     parser.banner = "Usage: bench [options]"
     parser.on("--model MODEL", "Model whose tokenizer is used for exact counts (default: #{model})") { |v| model = v }
-    parser.on("--top-k N", "Passages retrieved per question (default: #{top_k})") { |v| top_k = v.to_i }
+    parser.on("--top-k N", "Passages retrieved per question (default: #{top_k})") do |v|
+      # to_i? and not to_i: everything else in this file reports a clean
+      # "Error: …", and an unparseable flag has no business printing a Crystal
+      # backtrace instead.
+      parsed = v.to_i?
+      abort("Error: --top-k expects an integer, got #{v.inspect}") unless parsed
+      top_k = parsed
+    end
     parser.on("--json", "Emit the report as JSON") { as_json = true }
     parser.on("-h", "--help", "Show this help") do
       puts parser

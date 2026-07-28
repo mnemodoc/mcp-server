@@ -146,7 +146,7 @@ module MnemodocServer
     # Mirrors the vec0 backfill's INFO bracketing so a bulk Qdrant rebuild is
     # visible in the log rather than happening silently.
     Log.info { "backfilling qdrant from #{chunk_count} stored embeddings" }
-    store.stored_embeddings.each_slice(256) { |batch| index.upsert(batch) }
+    store.each_stored_embedding_batch(256) { |batch| index.upsert(batch) }
     Log.info { "qdrant backfill complete" }
   end
 
@@ -158,7 +158,7 @@ module MnemodocServer
   # takes the server down.
   def self.background_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?,
                             sf : SingleFlight = SingleFlight.new) : Nil
-    idx_embedder = Indexer::Embedder.new(config.ollama)
+    idx_embedder = Indexer::Embedder.new(config.ollama, idle_connections: config.index.concurrency)
     registry = Indexer::Format::Registry.new(config)
     crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
     if store.model_mismatch?(config.ollama.model)

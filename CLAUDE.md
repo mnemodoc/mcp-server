@@ -146,7 +146,7 @@ src/mnemodoc_server/
 
 ### Machine-readable CLI output
 
-Every subcommand except `serve` accepts `--json` (one JSON object on stdout). Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`).
+Every subcommand that returns a result accepts `--json` (one JSON object on stdout) — `index`, `search`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not. Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`).
 
 **Payloads evolve additively** — fields may be added, never removed or renamed. There is deliberately no schema version field.
 

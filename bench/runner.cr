@@ -34,7 +34,8 @@ module Bench
           index_corpus(config, store, embedder)
           outcomes = questions.map { |question| ask(question, config, store, embedder) }
           Report.new(mode: @counter.mode, baseline_cost: baseline_cost, top_k: @top_k,
-            outcomes: outcomes, threshold: config.hook.similarity_threshold)
+            outcomes: outcomes, threshold: config.hook.similarity_threshold,
+            exact: @counter.exact?)
         ensure
           embedder.close
           store.close

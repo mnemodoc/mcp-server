@@ -533,4 +533,31 @@ Spectator.describe MnemodocServer::Store::SQLite do
       end
     end
   end
+
+  # chunk_count is reported on every search, so it is cached — which only works
+  # if every write path drops the cache. A stale count is a lie told on the
+  # hottest response in the server.
+  describe "#chunk_count caching" do
+    it "reflects each write path" do
+      embedding = Array(Float32).new(768, 0.2_f32)
+      chunk = ->(path : String, body : String) do
+        MnemodocServer::Chunk.new(file_path: path, heading: nil, parent_heading: nil,
+          content: body, embedding: embedding, token_count: 1, mtime: 1_i64)
+      end
+
+      expect(store.chunk_count).to eq(0)
+
+      store.index_file("doc/a.md", 1_i64, [chunk.call("doc/a.md", "one")])
+      expect(store.chunk_count).to eq(1)
+
+      store.index_file("doc/b.md", 1_i64, [chunk.call("doc/b.md", "two"), chunk.call("doc/b.md", "three")])
+      expect(store.chunk_count).to eq(3)
+
+      store.delete_file("doc/b.md")
+      expect(store.chunk_count).to eq(1)
+
+      store.clear_index!
+      expect(store.chunk_count).to eq(0)
+    end
+  end
 end
