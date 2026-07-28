@@ -18,6 +18,15 @@ debug:
 	@echo "OUTPUT_FILE: $(OUTPUT_FILE)"
 
 vec0:
+# The submodule is a separate checkout, and an uninitialised one is an empty
+# directory rather than an error. Without this guard `cat VERSION` failed into
+# an assignment that swallowed its status, envsubst wrote a header with empty
+# macros, and the build died at the compiler — pointing at the compiler, not at
+# the missing submodule.
+	@test -f "$(SUBMODULE)/sqlite-vec.c" || { \
+		echo "ext/sqlite-vec is empty: run 'git submodule update --init --recursive'" >&2; \
+		exit 1; \
+	}
 	VERSION="$$(cat $(SUBMODULE)/VERSION)"; \
 	export VERSION; \
 	export VERSION_MAJOR="$$(echo $$VERSION | cut -d. -f1)"; \

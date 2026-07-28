@@ -304,6 +304,8 @@ It gates on **cosine similarity**, not on the fused search score — the latter 
 
 Every failure path is silent and exits 0 by design: this runs synchronously in front of the user, and a hook that errors on an unrelated turn is worse than one that says nothing.
 
+`mnemodoc-server info --licenses` prints the third-party licence texts baked into the binary — the notices its statically linked dependencies require when the binary is redistributed on its own.
+
 ### Environment overrides
 
 Every setting can be overridden without editing the YAML, which is what makes a systemd unit or a container image configurable: `MNEMODOC_OLLAMA_HOST`, `MNEMODOC_OLLAMA_MODEL`, `MNEMODOC_OLLAMA_TIMEOUT`, `MNEMODOC_OLLAMA_BATCH_SIZE`, `MNEMODOC_SEARCH_TOP_K`, `MNEMODOC_SEARCH_MODE`, `MNEMODOC_SEARCH_BACKEND`, `MNEMODOC_SEARCH_RECENCY_DAYS`, `MNEMODOC_SEARCH_RECENCY_BOOST`, `MNEMODOC_SEARCH_KEYWORD_WEIGHT`, `MNEMODOC_QDRANT_URL`, `MNEMODOC_QDRANT_API_KEY`, `MNEMODOC_QDRANT_COLLECTION`, `MNEMODOC_HOOK_THRESHOLD`, `MNEMODOC_HOOK_MARGIN`, `MNEMODOC_HOOK_MAX_PASSAGES`, `MNEMODOC_SERVER_SSE_HOST`, `MNEMODOC_SERVER_SSE_PORT`, `MNEMODOC_SERVER_LOG_FILE`, `MNEMODOC_SERVER_LOG_LEVEL`, `MNEMODOC_SERVER_DAEMON`, `MNEMODOC_SERVER_IDLE_TIMEOUT`, `MNEMODOC_SERVER_DAEMON_WATCH`, `MNEMODOC_SERVER_WATCH_INTERVAL`, `MNEMODOC_DB_PATH`, `MNEMODOC_INDEX_CONCURRENCY`, `MNEMODOC_INDEX_PDF`, `MNEMODOC_INDEX_MAX_FILE_SIZE`, `MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES`, `MNEMODOC_CHUNKING_MERGE_PREAMBLE`, `MNEMODOC_EXCLUDE`.
