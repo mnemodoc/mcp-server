@@ -24,24 +24,35 @@ Spectator.describe MnemodocServer::ConnectionPool do
     end
   end
 
+  # Every fiber holds its client until the test releases them all, so the
+  # sixteen checkouts genuinely overlap. Yielding instead only guarantees that
+  # while scheduling is cooperative: under -Dpreview_mt a fiber can check its
+  # client back in before another checks one out, and reusing it then is
+  # correct behaviour, not a violation.
   it "never gives one client to two concurrent fibers" do
     pool = MnemodocServer::ConnectionPool.new
     taken = [] of HTTP::Client
     mutex = Mutex.new
+    held = Channel(Nil).new
+    release = Channel(Nil).new
     done = Channel(Nil).new
     begin
       16.times do
         spawn do
           client = pool.checkout(uri)
           mutex.synchronize { taken << client }
-          Fiber.yield
+          held.send(nil)
+          release.receive
           pool.checkin(uri, client)
           done.send(nil)
         end
       end
-      16.times { done.receive }
-      # Checked out concurrently, so every one of them had to be distinct.
+
+      16.times { held.receive } # all sixteen are now holding one
       expect(taken.map(&.object_id).uniq!.size).to eq(16)
+
+      16.times { release.send(nil) }
+      16.times { done.receive }
     ensure
       pool.close_all
     end
