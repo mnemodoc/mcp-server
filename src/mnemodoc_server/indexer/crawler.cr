@@ -35,6 +35,12 @@ module MnemodocServer
             Log.warn { "path does not exist, skipping: #{expanded}" }
           end
         end
+        # Roots overlap in ordinary configurations — a directory plus one file
+        # inside it, or two nested directories. Without this the same file was
+        # dispatched to two workers: SingleFlight stopped the second from
+        # repeating the work but gave it no result either, so it counted as a
+        # failure and `indexed` came back short of what had really been indexed.
+        files.uniq!(&.[:path])
         files.sort_by { |file_entry| file_entry[:path] }
       end
 
@@ -166,7 +172,7 @@ module MnemodocServer
         sf : SingleFlight,
       ) : {success: Bool, failed: Int32}
         outcome = {success: false, failed: 0}
-        sf.run(file[:path]) do
+        led = sf.run(file[:path]) do
           handler = @registry.for(file[:path], explicit: file[:explicit])
           if handler.nil?
             Log.debug { "no handler for #{file[:path]}, skipping" }
@@ -193,6 +199,15 @@ module MnemodocServer
             end
             outcome = {success: true, failed: embed_result[:failed]}
           end
+        end
+        # A follower ran nothing, so `outcome` says nothing. Another fiber was
+        # indexing this very file — the boot crawl and the live watcher can meet
+        # on one path — and asking the store settles what actually happened
+        # instead of recording a failure that never occurred.
+        unless led
+          indexed = store.file_indexed?(file[:path], mtime: file[:mtime])
+          Log.debug { "#{file[:path]} was indexed concurrently; not re-indexing" } if indexed
+          outcome = {success: indexed, failed: 0}
         end
         outcome
       end

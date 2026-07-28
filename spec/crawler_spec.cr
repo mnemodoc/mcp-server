@@ -492,4 +492,34 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
       expect(names).to eq(["a.docx", "b.epub"])
     end
   end
+
+  # Overlapping roots are a normal configuration — a directory plus one file
+  # inside it, or two nested directories. The same file was then collected
+  # twice and dispatched to two workers; SingleFlight kept the second from
+  # doing the work, but it returned no result either, so the second job counted
+  # as a failure and `indexed` came back short of what was actually indexed.
+  describe "overlapping roots" do
+    it "collects a file once and counts it once" do
+      write_file("doc/a.md", "# A\n\n## S\n\nbody")
+      dir = File.join(tmp_dir, "doc")
+      file = File.join(dir, "a.md")
+
+      crawler = MnemodocServer::Indexer::Crawler.new([dir, file], default_registry)
+      expect(crawler.collect_files.map(&.[:path]).size).to eq(1)
+
+      fake_ollama(Array(Float32).new(768, 0.1_f32)) do |port|
+        store = MnemodocServer::Store::SQLite.new(File.join(tmp_dir, "index.db"))
+        embedder = MnemodocServer::Indexer::Embedder.new(
+          MnemodocServer::OllamaConfig.from_yaml("host: http://127.0.0.1:#{port}"))
+        begin
+          result = crawler.run(store, embedder, MnemodocServer::SingleFlight.new, concurrency: 2)
+          expect(result[:indexed]).to eq(1)
+          expect(store.list_files.size).to eq(1)
+        ensure
+          embedder.close
+          store.close
+        end
+      end
+    end
+  end
 end

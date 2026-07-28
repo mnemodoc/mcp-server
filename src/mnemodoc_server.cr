@@ -149,7 +149,8 @@ module MnemodocServer
   # logs a one-line summary. Does NOT spawn — the caller decides whether to run
   # this in the background. A failing index is logged and swallowed so it never
   # takes the server down.
-  def self.background_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?) : Nil
+  def self.background_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?,
+                            sf : SingleFlight = SingleFlight.new) : Nil
     idx_embedder = Indexer::Embedder.new(config.ollama)
     registry = Indexer::Format::Registry.new(config)
     crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
@@ -159,7 +160,7 @@ module MnemodocServer
       qi.try(&.clear)
     end
     qi.try { |index| ensure_qdrant!(index, store) }
-    index_result = crawler.run(store, idx_embedder, SingleFlight.new, concurrency: config.index.concurrency)
+    index_result = crawler.run(store, idx_embedder, sf, concurrency: config.index.concurrency)
     store.embedding_model = config.ollama.model
     Log.info { "startup indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
   rescue ex
@@ -264,7 +265,7 @@ module MnemodocServer
   # wind the loop down first, or it keeps polling against a closed store and a
   # directory that no longer exists.
   def self.watch_and_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?,
-                           stop : Channel(Nil)? = nil) : Nil
+                           stop : Channel(Nil)? = nil, sf : SingleFlight = SingleFlight.new) : Nil
     # Typed as the union the file_watcher shard expects (Enumerable(String | Path)).
     patterns = [] of String | Path
     config.resolved_paths.each do |entry|
@@ -273,7 +274,6 @@ module MnemodocServer
     return if patterns.empty?
     registry = Indexer::Format::Registry.new(config)
     embedder = Indexer::Embedder.new(config.ollama)
-    sf = SingleFlight.new
     interval = config.server.daemon_watch_interval.seconds
     Log.info { "watch: live re-index over #{patterns.size} path(s), every #{config.server.daemon_watch_interval}s" }
     loop do

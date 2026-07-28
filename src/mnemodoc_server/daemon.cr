@@ -56,14 +56,20 @@ module MnemodocServer
       server = built[:server]
       embedder = built[:embedder]
 
+      # One SingleFlight for both indexing paths. They were given one each,
+      # which meant the deduplication it exists for did not apply between them:
+      # a file saved while the boot crawl was still running got indexed twice,
+      # concurrently, by the crawl and by the watcher.
+      single_flight = SingleFlight.new
+
       # Index configured paths in the background so the daemon is immediately
       # responsive; unchanged files are skipped via mtime so restarts are cheap.
-      spawn { MnemodocServer.background_index(@config, active_store, qi) }
+      spawn { MnemodocServer.background_index(@config, active_store, qi, single_flight) }
 
       # Live re-index: watch the configured paths and pick up changes while the
       # daemon runs. Dies with the process on shutdown (holds no external resource).
       if @config.server.daemon_watch?
-        spawn { MnemodocServer.watch_and_index(@config, active_store, qi) }
+        spawn { MnemodocServer.watch_and_index(@config, active_store, qi, sf: single_flight) }
       end
 
       t = MCP::Http.new(
