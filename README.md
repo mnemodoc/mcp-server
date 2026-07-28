@@ -263,7 +263,9 @@ $ mnemodoc-server search "retry policy" --json | jq -r '.results[0].content'
 
 **Payloads evolve additively**: fields may be added, never removed or renamed. There is no schema version to negotiate.
 
-`--quiet` prints nothing at all and reports through the exit code. It is available where that is meaningful — `index`, `delete`, `daemon status`, `daemon stop`. Exit codes are unchanged from before the flag existed, with one exception: `daemon status` exits 1 when no daemon is running, in the manner of `systemctl is-active`, which is what makes `mnemodoc-server daemon status --quiet && …` usable.
+`--quiet` prints nothing at all and reports through the exit code. It is available where that is meaningful — `index`, `delete`, `daemon status`, `daemon stop`.
+
+Two commands exit non-zero on an outcome rather than on a crash. `daemon status` exits 1 when no daemon is running, in the manner of `systemctl is-active`, which is what makes `mnemodoc-server daemon status --quiet && …` usable. `index` exits 1 when chunks failed to embed and **nothing at all** was indexed — an unreachable Ollama, most often. A run with simply nothing to do still exits 0, and the JSON payload carries a `failed` counter either way. Under `--quiet` the exit code is the whole report, which is exactly why that case must not read as success.
 
 `daemon stop` probes the daemon's socket before signalling anything: if nothing answers, it removes the stale socket and pid file and reports that no daemon is running, rather than risking a `SIGTERM` to an unrelated process that inherited a dead daemon's pid. If the daemon does not exit within `--timeout` seconds the command says so and stops — it never escalates to `SIGKILL` against a process holding an open SQLite database.
 
@@ -272,7 +274,7 @@ $ mnemodoc-server search "retry policy" --json | jq -r '.results[0].content'
 | Tool | Required args | Optional args | Returns |
 |---|---|---|---|
 | `query_documents` | `query` (string) | `top_k` (int), `mode` (hybrid\|semantic\|keyword) | chunks with file, heading, parent_heading, content, score; total_candidates, query_time_ms, mode |
-| `ingest_path` | `path` (string) | — | indexed, skipped, pruned counts |
+| `ingest_path` | `path` (string) | — | indexed, skipped, pruned, failed counts |
 | `list_files` | — | — | list of indexed files with metadata |
 | `delete_file` | `path` (string) | — | confirmation |
 | `status` | — | — | version, chunk_count, file_count, model, search_mode, db_path |
@@ -289,6 +291,8 @@ $ mnemodoc-server search "retry policy" --json | jq -r '.results[0].content'
 **Live re-indexing (daemon)** — while the daemon runs it watches the configured `paths` and re-indexes a document within ~1 s of it being created, modified, or deleted (polling, via the `file_watcher` shard). Enabled by default (`server.daemon_watch: true`); tune the cadence with `server.daemon_watch_interval` (seconds) or set `daemon_watch: false` to keep boot-time indexing only. Only the daemon watches; the standalone stdio fallback does not.
 
 **Auto-indexing on startup** — `serve` automatically re-indexes all `paths` from the config in the background. The server is immediately responsive; indexing happens concurrently. Files whose mtime hasn't changed since the last run are skipped, so restarts are cheap.
+
+**`ingest_path` refuses two things**, both to protect the index rather than to be strict. A path outside the roots listed under `paths:` is rejected: the indexed corpus is also what an agent reads, so a document that asks it to index `~/.aws/credentials` would otherwise get its way — add the directory to `paths:` to make it indexable. And a partial ingest is rejected when the configured embedding model no longer matches the one the stored vectors were built with: that invalidates every vector, so the index has to be rebuilt whole rather than half-refilled from one path.
 
 **Chunking noise reduction (opt-in)** — docs that open each file with a navigation block (a breadcrumb of links plus a one-line description) otherwise turn that preamble into a keyword-rich but answer-less chunk that squats `top_k` slots. Two generic, config-driven options under `chunking:` (both default `false`, so the index is unchanged without them) address this: `strip_link_only_lines` drops lines made up solely of inline links and separators (e.g. `← [Index](…) — [Map](…)`) before chunking, while keeping any line that carries real text — it covers the line-based markup formats that feed raw markup into chunks (Markdown, Org-mode `[[…][…]]`, AsciiDoc `link:`/`xref:`/`<<…>>`/URLs, reStructuredText `` `text <url>`_ ``) and is a deliberate no-op for DOM/Office formats (HTML, `.docx`, `.odt`, EPUB, …), which flatten links to plain text (use `merge_preamble_into_first_section` for those); `merge_preamble_into_first_section` folds the pre-heading preamble into the first section's chunk instead of emitting it standalone. Re-index after changing either (run `ingest_path` or a full re-index) for the new chunks to take effect.
 

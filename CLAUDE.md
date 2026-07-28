@@ -150,7 +150,7 @@ Every subcommand except `serve` accepts `--json` (one JSON object on stdout). Er
 
 **Payloads evolve additively** — fields may be added, never removed or renamed. There is deliberately no schema version field.
 
-`--quiet` (on `index`, `delete`, `daemon status`, `daemon stop`) prints nothing and reports through the exit code. Existing exit codes are unchanged; the one exception is `daemon status`, which exits 1 when no daemon is running (`systemctl is-active` semantics) — it was added in the same cycle, so no caller depended on the old code.
+`--quiet` (on `index`, `delete`, `daemon status`, `daemon stop`) prints nothing and reports through the exit code. Two commands exit non-zero on an outcome rather than a crash: `daemon status` when no daemon is running (`systemctl is-active` semantics), and `index` when chunks failed to embed and nothing at all was indexed (an unreachable Ollama, typically) — a run with nothing to do still exits 0, and the payload carries a `failed` counter regardless. `ingest_path` refuses a path outside `paths:` and refuses a partial ingest when the embedding model has changed; both keep the index from being half-built or quietly poisoned.
 
 ### The prompt hook
 
