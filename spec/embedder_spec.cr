@@ -235,4 +235,125 @@ Spectator.describe MnemodocServer::Indexer::Embedder do
       end
     end
   end
+
+  # Everything that goes wrong with Ollama has to arrive as EmbedderError,
+  # because that is the only thing every caller rescues (tools/query.cr, and
+  # the three CLI commands). Anything else reaches the MCP client as an
+  # internal error instead of "Ollama is unreachable".
+  describe "unexpected but well-formed responses" do
+    private def responding(body : String, &)
+      server = HTTP::Server.new do |ctx|
+        ctx.response.status_code = 200
+        ctx.response.content_type = "application/json"
+        ctx.response.print(body)
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+      begin
+        yield addr.port
+      ensure
+        server.close
+      end
+    end
+
+    it "reports a null embeddings field as an embedder error" do
+      responding(%({"embeddings": null})) do |port|
+        embedder = MnemodocServer::Indexer::Embedder.new(
+          MnemodocServer::OllamaConfig.from_yaml("host: http://127.0.0.1:#{port}"))
+        begin
+          expect { embedder.embed_batch(["x"]) }
+            .to raise_error(MnemodocServer::Indexer::EmbedderError)
+        ensure
+          embedder.close
+        end
+      end
+    end
+
+    it "reports a non-object body as an embedder error" do
+      responding(%("OK")) do |port|
+        embedder = MnemodocServer::Indexer::Embedder.new(
+          MnemodocServer::OllamaConfig.from_yaml("host: http://127.0.0.1:#{port}"))
+        begin
+          expect { embedder.embed_batch(["x"]) }
+            .to raise_error(MnemodocServer::Indexer::EmbedderError)
+        ensure
+          embedder.close
+        end
+      end
+    end
+  end
+
+  # Ollama closes idle keep-alive connections. The pool handed one back without
+  # revalidating it and the caller did not retry, so the first request after a
+  # pause failed with "cannot reach Ollama" while Ollama was perfectly up — and
+  # the one after it succeeded. An intermittent failure with no cause visible.
+  describe "a connection the server closed while it sat idle" do
+    it "retries once on a fresh connection instead of failing" do
+      embedding = Array(Float32).new(768, 0.25_f32)
+      served = 0
+      server = HTTP::Server.new do |ctx|
+        served += 1
+        ctx.response.status_code = 200
+        ctx.response.content_type = "application/json"
+        body = ctx.request.body.try(&.gets_to_end) || ""
+        count = JSON.parse(body)["input"].as_a.size rescue 1
+        # Refuse to keep the connection alive, so the pooled client is dead by
+        # the time it is checked out again.
+        ctx.response.headers["Connection"] = "close"
+        ctx.response.print({"embeddings" => Array.new(count, embedding)}.to_json)
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+
+      embedder = MnemodocServer::Indexer::Embedder.new(
+        MnemodocServer::OllamaConfig.from_yaml("host: http://127.0.0.1:#{addr.port}"))
+      begin
+        expect(embedder.embed_batch(["first"]).size).to eq(1)
+        expect(embedder.embed_batch(["second"]).size).to eq(1)
+        expect(served).to be >= 2
+      ensure
+        embedder.close
+        server.close
+      end
+    end
+  end
+
+  # When the host itself is unreachable, retrying every chunk one by one buys
+  # nothing: the failure is not about the chunk. On a corpus of any size that
+  # turned one dead batch into one dead request per chunk, each paying the
+  # connect timeout, times the indexing concurrency.
+  describe "a host that is not answering" do
+    it "does not retry every chunk individually" do
+      attempts = 0
+      server = TCPServer.new("127.0.0.1", 0)
+      port = server.local_address.port
+      spawn do
+        while socket = server.accept?
+          attempts += 1
+          socket.close
+        end
+      end
+      Fiber.yield
+
+      chunks = (1..30).map do |i|
+        MnemodocServer::Chunk.new(file_path: "doc/a.md", heading: "## #{i}", parent_heading: nil,
+          content: "body #{i}", embedding: [] of Float32, token_count: 1, mtime: 1_i64)
+      end
+      embedder = MnemodocServer::Indexer::Embedder.new(
+        MnemodocServer::OllamaConfig.from_yaml("host: http://127.0.0.1:#{port}\nbatch_size: 10"))
+      begin
+        result = embedder.embed_chunks_resilient(chunks)
+        expect(result[:embedded]).to be_empty
+        expect(result[:failed]).to eq(30)
+        # Three batches, plus at most one retry apiece. Thirty means the
+        # per-chunk storm is back.
+        expect(attempts).to be < 10
+      ensure
+        embedder.close
+        server.close
+      end
+    end
+  end
 end

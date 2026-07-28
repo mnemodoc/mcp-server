@@ -30,6 +30,11 @@ module MnemodocServer
         client = HTTP::Client.new(uri)
         client.connect_timeout = @timeout.seconds
         client.read_timeout = @timeout.seconds
+        # Writing needs a bound too. A server that accepts and then stops
+        # reading blocks the send as soon as the body outgrows the socket
+        # buffer — reachable with a large batch_size and long chunks — and the
+        # configured timeout would then bound nothing at all.
+        client.write_timeout = @timeout.seconds
       end
       client
     end
