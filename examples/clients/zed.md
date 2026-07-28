@@ -20,7 +20,7 @@ Zed calls MCP servers **context servers**, configured under `context_servers` in
   "context_servers": {
     "mnemodoc": {
       "command": "mnemodoc-server",
-      "args": ["serve", "--config", ".mnemodoc.yml"],
+      "args": ["serve", "--config", "/absolute/path/to/project/.mnemodoc.yml"],
       "env": {}
     }
   }

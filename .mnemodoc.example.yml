@@ -45,6 +45,7 @@ db:
 index:
   concurrency: 4      # parallel files indexed at once (>= 1)
   pdf: false          # opt-in PDF indexing; requires `pdftotext` in PATH, skips PDFs otherwise
+  max_file_size: 10485760  # bytes; a document larger than this is skipped rather than read whole (0 disables)
 
 # Chunking noise reduction (both default false → index byte-for-byte unchanged).
 # Re-index after changing these (ingest_path / a full re-index) to take effect.
@@ -67,3 +68,37 @@ index:
 #       description: Stimulus controllers, Turbo Streams, HAML views
 #       when_files: ["app/frontend/**", "app/views/**"]
 #       when_query: ["stimulus", "turbo", "view"]
+
+# Files whose absolute path matches any of these globs are never indexed.
+# exclude:
+#   - "**/templates/**"
+#   - "**/vendor/**"
+
+# Contextual roles: which conventions the agent should adopt for the files,
+# task or question at hand. Without this section the get_project_context tool
+# is not offered at all, and the `context` command has nothing to select from.
+# context:
+#   default: doc/roles/generalist.md
+#   roles:
+#     - file: doc/roles/backend.md
+#       description: Backend conventions   # used only for the semantic tie-break
+#       when_files: ["app/models/**", "app/policies/**"]
+#       when_task: ["implement", "refactor"]
+#       when_query: ["operation", "policy"]
+
+# The UserPromptSubmit hook (`prompt-hook`): whether a passage is injected
+# before the agent reasons, and how many. The threshold is a cosine, so it is
+# comparable across queries — re-calibrate it per corpus with `mise
+# bench:tokens`, which reports the firing and false-firing rates.
+# hook:
+#   similarity_threshold: 0.515
+#   margin_threshold: 0.02
+#   max_passages: 3
+
+# Semantic backend. vec0 (the default) is embedded and needs nothing; qdrant
+# is opt-in and requires the section below.
+# qdrant:
+#   url: http://localhost:6333
+#   api_key:            # or the QDRANT_API_KEY environment variable
+#   collection:         # defaults to a per-project key
+

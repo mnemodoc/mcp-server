@@ -20,15 +20,20 @@ team). Transport is **stdio** for a local index:
   "mcpServers": {
     "mnemodoc": {
       "command": "mnemodoc-server",
-      "args": ["serve", "--config", ".mnemodoc.yml"]
+      "args": ["serve", "--config", "${CLAUDE_PROJECT_DIR}/.mnemodoc.yml"]
     }
   }
 }
 ```
 
 The tools land as `mcp__mnemodoc__query_documents`, `mcp__mnemodoc__get_project_context`,
-`mcp__mnemodoc__status`, etc. Claude Code injects `CLAUDE_PROJECT_DIR` into the server's
-environment, so config paths resolve against the project, not the process cwd.
+`mcp__mnemodoc__status`, etc.
+
+The config path is **absolute** on purpose. The server resolves a relative one against
+its own working directory, which is whatever the client happened to start it in — not
+necessarily the project root. `${CLAUDE_PROJECT_DIR}` is expanded by Claude Code when it
+reads `.mcp.json`; the server itself knows nothing of that variable, so any absolute path
+does just as well.
 
 > SSE transport is deprecated in Claude Code — use stdio (local) or HTTP (remote).
 
@@ -49,51 +54,44 @@ prints it. It handles **two channels**:
   reasoning/reading turns with no edit.
 
 It **must degrade silently** (`exit 0`) if the server or Ollama is down, so a missing
-index never blocks an edit. Save as `bin/mnemodoc-hook` (chmod +x):
+index never blocks an edit — which the command already does on every failure path.
 
-```python
-#!/usr/bin/env python3
-# mnemodoc hook — injects the domain role to adopt.
-#   PreToolUse (Edit/Write): from the edited file  -> `context --files`
-#   UserPromptSubmit:        from the prompt text   -> `context --query`
-# On the query channel, only inject on a decisive domain match: if the selector
-# falls back to the generalist role, stay silent (don't pollute every turn).
-# Degrades silently (exit 0) when the server is unavailable.
-import json, sys, subprocess, os
+`--hook-stdin` reads the client's payload directly, so there is nothing to re-implement:
+it derives the files or the query from the event itself, and records the session and
+agent in the audit log, which a wrapper passing `--files`/`--query` cannot do.
 
-CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".mnemodoc.yml")
-
-def run(*args):
-    try:
-        r = subprocess.run(["mnemodoc-server", "context", *args, "--config", CONFIG],
-                           capture_output=True, text=True, timeout=5)
-        return r.stdout.strip() if r.returncode == 0 else ""
-    except Exception:
-        return ""
-
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-
-event = payload.get("hook_event_name", "")
-role = ""
-if event == "PreToolUse":
-    path = payload.get("tool_input", {}).get("file_path", "")
-    if path:
-        role = run("--files", path)
-elif event == "UserPromptSubmit":
-    prompt = payload.get("prompt", "")
-    if prompt:
-        out = run("--query", prompt)
-        # skip the generalist fallback so reasoning turns aren't spammed
-        if out and "generalist" not in out.splitlines()[0].lower():
-            role = out
-
-if role:
-    print(f"[mnemodoc] role:\n{role}")
-sys.exit(0)
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mnemodoc-server context --hook-stdin --config \"${CLAUDE_PROJECT_DIR}/.mnemodoc.yml\" || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "mnemodoc-server context --hook-stdin --config \"${CLAUDE_PROJECT_DIR}/.mnemodoc.yml\" || true"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
+
+On the `UserPromptSubmit` channel the command stays silent by itself when the selection
+falls back to the default role, so an undecided prompt does not pollute every turn with
+the generalist context. That decision is the selector's, reported in the `default` field
+of `context --json` — not something to guess from the markdown's first line.
 
 ### Wiring it in `.claude/settings.json`
 

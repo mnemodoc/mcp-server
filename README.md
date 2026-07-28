@@ -292,6 +292,24 @@ Two commands exit non-zero on an outcome rather than on a crash. `daemon status`
 
 **Auto-indexing on startup** — `serve` automatically re-indexes all `paths` from the config in the background. The server is immediately responsive; indexing happens concurrently. Files whose mtime hasn't changed since the last run are skipped, so restarts are cheap.
 
+### The prompt hook
+
+`prompt-hook` reads a client hook payload on standard input and injects the best matching passage on `UserPromptSubmit`, so documentation reaches the agent whether or not it thinks to search:
+
+```bash
+mnemodoc-server prompt-hook --config /path/to/project/.mnemodoc.yml || true
+```
+
+It gates on **cosine similarity**, not on the fused search score — the latter is a rank artifact, identical for the top hit of an off-topic query and of a targeted one. `hook.similarity_threshold` decides whether to inject at all; `hook.margin_threshold` decides how many, a runner-up within that distance meaning the ranking is not decisive; `hook.max_passages` caps the set. Every default is measured on the benchmark corpus rather than chosen — `mise bench:tokens` reports the firing rate, the false-firing rate on off-topic prompts, and how often the injected set actually contains the answer. Re-calibrate per corpus.
+
+Every failure path is silent and exits 0 by design: this runs synchronously in front of the user, and a hook that errors on an unrelated turn is worse than one that says nothing.
+
+### Environment overrides
+
+Every setting can be overridden without editing the YAML, which is what makes a systemd unit or a container image configurable: `MNEMODOC_OLLAMA_HOST`, `MNEMODOC_OLLAMA_MODEL`, `MNEMODOC_OLLAMA_TIMEOUT`, `MNEMODOC_OLLAMA_BATCH_SIZE`, `MNEMODOC_SEARCH_TOP_K`, `MNEMODOC_SEARCH_MODE`, `MNEMODOC_SEARCH_BACKEND`, `MNEMODOC_SEARCH_RECENCY_DAYS`, `MNEMODOC_SEARCH_RECENCY_BOOST`, `MNEMODOC_SEARCH_KEYWORD_WEIGHT`, `MNEMODOC_QDRANT_URL`, `MNEMODOC_QDRANT_API_KEY`, `MNEMODOC_QDRANT_COLLECTION`, `MNEMODOC_HOOK_THRESHOLD`, `MNEMODOC_HOOK_MARGIN`, `MNEMODOC_HOOK_MAX_PASSAGES`, `MNEMODOC_SERVER_SSE_HOST`, `MNEMODOC_SERVER_SSE_PORT`, `MNEMODOC_SERVER_LOG_FILE`, `MNEMODOC_SERVER_LOG_LEVEL`, `MNEMODOC_SERVER_DAEMON`, `MNEMODOC_SERVER_IDLE_TIMEOUT`, `MNEMODOC_SERVER_DAEMON_WATCH`, `MNEMODOC_SERVER_WATCH_INTERVAL`, `MNEMODOC_DB_PATH`, `MNEMODOC_INDEX_CONCURRENCY`, `MNEMODOC_INDEX_PDF`, `MNEMODOC_INDEX_MAX_FILE_SIZE`, `MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES`, `MNEMODOC_CHUNKING_MERGE_PREAMBLE`, `MNEMODOC_EXCLUDE`.
+
+Booleans accept `true/1/yes/on` in any case. A value that cannot be read — a non-numeric count, an unrecognised boolean — is reported by the startup validation alongside every other configuration problem, and the previous value is kept rather than silently replaced by zero.
+
 **`ingest_path` refuses two things**, both to protect the index rather than to be strict. A path outside the roots listed under `paths:` is rejected: the indexed corpus is also what an agent reads, so a document that asks it to index `~/.aws/credentials` would otherwise get its way — add the directory to `paths:` to make it indexable. And a partial ingest is rejected when the configured embedding model no longer matches the one the stored vectors were built with: that invalidates every vector, so the index has to be rebuilt whole rather than half-refilled from one path.
 
 **Chunking noise reduction (opt-in)** — docs that open each file with a navigation block (a breadcrumb of links plus a one-line description) otherwise turn that preamble into a keyword-rich but answer-less chunk that squats `top_k` slots. Two generic, config-driven options under `chunking:` (both default `false`, so the index is unchanged without them) address this: `strip_link_only_lines` drops lines made up solely of inline links and separators (e.g. `← [Index](…) — [Map](…)`) before chunking, while keeping any line that carries real text — it covers the line-based markup formats that feed raw markup into chunks (Markdown, Org-mode `[[…][…]]`, AsciiDoc `link:`/`xref:`/`<<…>>`/URLs, reStructuredText `` `text <url>`_ ``) and is a deliberate no-op for DOM/Office formats (HTML, `.docx`, `.odt`, EPUB, …), which flatten links to plain text (use `merge_preamble_into_first_section` for those); `merge_preamble_into_first_section` folds the pre-heading preamble into the first section's chunk instead of emitting it standalone. Re-index after changing either (run `ingest_path` or a full re-index) for the new chunks to take effect.

@@ -20,7 +20,7 @@ Verified against the official docs (June 2026):
   "mcpServers": {
     "mnemodoc": {
       "command": "mnemodoc-server",
-      "args": ["serve", "--config", ".mnemodoc.yml"]
+      "args": ["serve", "--config", "/absolute/path/to/project/.mnemodoc.yml"]
     }
   }
 }

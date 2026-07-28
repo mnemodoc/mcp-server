@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Per-project daemon with a stdio proxy: one process owns the index, every
+  `serve --stdio` is a thin client to it, with self-healing respawn and an
+  in-process fallback
+- Live re-indexing while the daemon runs, and a `daemon status` / `daemon stop`
+  pair to drive it
+- Contextual roles: the `get_project_context` tool and the `context` command,
+  both selecting through one engine, with `--hook-stdin` reading a client hook
+  payload directly
+- `prompt-hook`: injects the best matching passage on `UserPromptSubmit`, gated
+  on cosine similarity with thresholds measured on the benchmark corpus
+- Fourteen further document formats — HTML, Office and OpenDocument, EPUB,
+  DocBook, DITA, FictionBook, Jupyter notebooks — plus opt-in PDF
+- Qdrant as an alternative semantic backend to the embedded vec0 index
+- `--json` and `--quiet` on the subcommands, for scripting
+- `index.max_file_size`, bounding what one document may cost to read
+
+### Changed
+- `index` exits non-zero when chunks failed to embed and nothing was indexed;
+  the payload carries a `failed` counter
+- `ingest_path` refuses a path outside the configured roots, and refuses a
+  partial ingest after an embedding model change
+- `get_project_context` is only advertised when the project declares roles
+- Environment overrides that cannot be read are reported by the startup
+  validation instead of raising; booleans accept `true/1/yes/on` in any case
+
+### Fixed
+- Documents with YAML frontmatter were indexed as a single headingless chunk
+- Search fusion collapsed two chunks of one file that shared a heading
+- Files that are not valid UTF-8 broke seventeen extensions' handlers
+- Sections whose heading merely mentioned a table of contents were discarded
+- Code samples were read as headings in Markdown, Org and AsciiDoc
+- Deleting a file was not atomic across the index and its search tables
+
 ## [1.0.0] - 2026-06-17
 
 ### Added

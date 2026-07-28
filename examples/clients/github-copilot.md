@@ -25,7 +25,7 @@ Declare the server in `.vscode/mcp.json`. **The root key is `servers`** — not
     "mnemodoc": {
       "type": "stdio",
       "command": "mnemodoc-server",
-      "args": ["serve", "--config", ".mnemodoc.yml"]
+      "args": ["serve", "--config", "/absolute/path/to/project/.mnemodoc.yml"]
     }
   }
 }
