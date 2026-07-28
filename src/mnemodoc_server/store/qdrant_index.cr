@@ -6,11 +6,33 @@ module MnemodocServer
     # Qdrant errors, logs, records an Advisory, and returns a safe value so a
     # missing/down Qdrant never aborts indexing or crashes a query. Used only
     # when search.backend == "qdrant".
+    # Raised when Qdrant cannot even be addressed, so callers can degrade to
+    # keyword-only rather than fail to start.
+    class QdrantUnavailable < Exception; end
+
     class QdrantIndex
       Log = ::Log.for("mnemodoc-server.store.qdrant")
 
+      # The one place in this best-effort wrapper that could still take the
+      # process down. Qdrant::Collection raises ArgumentError on a URL with no
+      # authority — `my-qdrant:6333`, which parses as a scheme, and which
+      # validate! accepts since it only checks the URL is non-empty. The daemon
+      # then died at startup instead of degrading to keyword-only as this
+      # class's whole contract promises.
       def initialize(config : QdrantConfig, collection : String)
+        ensure_addressable!(config.url)
         @collection = Qdrant::Collection.new(collection, config.url, config.api_key)
+      end
+
+      # Checked before constructing, because the client raises ArgumentError on
+      # a URL with no authority — "my-qdrant:6333" parses as a scheme — and
+      # validate! lets that through, only checking the URL is non-empty.
+      private def ensure_addressable!(url : String) : Nil
+        host = URI.parse(url).host
+        return if host && !host.empty?
+        raise QdrantUnavailable.new("qdrant.url has no host (#{url.inspect}); expected a scheme, e.g. http://host:6333")
+      rescue ex : URI::Error
+        raise QdrantUnavailable.new("qdrant.url is not a valid URL (#{url.inspect}): #{ex.message}")
       end
 
       # Idempotent collection creation (cosine; dim from the embedding model).

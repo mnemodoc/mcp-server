@@ -127,6 +127,13 @@ module MnemodocServer
   def self.qdrant_index(config : Config) : Store::QdrantIndex?
     return nil unless config.search.backend == "qdrant"
     Store::QdrantIndex.new(config.qdrant, config.qdrant_collection)
+  rescue ex : Store::QdrantUnavailable
+    # Degrading is the documented behaviour of this backend; refusing to start
+    # is not. The advisory reaches the agent in every tool response, which a
+    # log line would not.
+    Advisories.add("qdrant backend is configured but unusable: #{ex.message}; searching without it")
+    Log.error { "qdrant unavailable: #{ex.message}" }
+    nil
   end
 
   # Ensures the Qdrant collection exists and backfills it from the durable

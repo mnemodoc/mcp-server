@@ -491,4 +491,29 @@ Spectator.describe "MnemodocServer tools" do
       expect(store.embedding_model).to eq("some-other-model")
     end
   end
+
+  # An unusable Qdrant URL is a configuration mistake, and this backend's whole
+  # contract is to degrade rather than fail. validate! accepts a URL with no
+  # authority — "my-qdrant:6333" parses as a scheme — and the client raised on
+  # it, so the daemon died at startup instead of searching without it.
+  describe "an unusable qdrant configuration" do
+    it "degrades to no qdrant index and says so in the advisories" do
+      MnemodocServer::Advisories.clear
+      cfg = MnemodocServer::Config.from_yaml(<<-YAML)
+      db:
+        path: #{tmp_db}
+      paths:
+        - #{tmp_dir}
+      search:
+        backend: qdrant
+      qdrant:
+        url: my-qdrant:6333
+      YAML
+
+      expect(MnemodocServer.qdrant_index(cfg)).to be_nil
+      expect(MnemodocServer.advisories.join(" ")).to contain("qdrant")
+    ensure
+      MnemodocServer::Advisories.clear
+    end
+  end
 end

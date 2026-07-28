@@ -5,20 +5,28 @@ module MnemodocServer
   # stderr/logs and is invisible in clients like Zed.
   module Advisories
     @@items = [] of String
+    # Written at startup but READ on every tool response, from whichever fiber
+    # is serving it — up to 32 at once in the daemon. Cooperative scheduling
+    # hides that today, since none of these operations yields; it stops hiding
+    # it under -Dpreview_mt, where a concurrent read during a rehash corrupts
+    # the array outright.
+    @@mutex = Mutex.new
 
     # Records an advisory, ignoring exact duplicates.
     def self.add(message : String) : Nil
-      @@items << message unless @@items.includes?(message)
+      @@mutex.synchronize do
+        @@items << message unless @@items.includes?(message)
+      end
     end
 
     # The active advisories, as a copy.
     def self.all : Array(String)
-      @@items.dup
+      @@mutex.synchronize { @@items.dup }
     end
 
     # Drops all advisories (used between tests and on re-init).
     def self.clear : Nil
-      @@items.clear
+      @@mutex.synchronize { @@items.clear }
     end
   end
 

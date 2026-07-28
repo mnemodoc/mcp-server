@@ -49,7 +49,13 @@ module MnemodocServer
       spawn do
         loop do
           sleep interval
-          watchdog
+          begin
+            watchdog
+          rescue ex
+            # The fiber must outlive any single failed ping: dying here is
+            # indistinguishable, from systemd's side, from a hung service.
+            Log.warn { "systemd watchdog notification failed: #{ex.message}" }
+          end
         end
       end
     end
@@ -69,10 +75,26 @@ module MnemodocServer
       socket_path = ENV["NOTIFY_SOCKET"]?
       return unless socket_path
       @@mutex.synchronize do
-        sock = @@socket ||= open_socket(socket_path)
+        # Opening can fail on its own — a reloaded unit leaves NOTIFY_SOCKET
+        # pointing at a path nobody listens on any more. That exception used to
+        # travel out of here: through transport.on_ready at startup, and inside
+        # the watchdog fiber, where it killed the fiber without a word and left
+        # the supervisor waiting for pings that would never come again.
+        sock = @@socket ||= begin
+          open_socket(socket_path)
+        rescue ex
+          Log.debug { "systemd notify socket unavailable at #{socket_path}: #{ex.message}" }
+          nil
+        end
+        return unless sock
+
         begin
           sock.send(payload)
         rescue
+          # Closed, not merely dropped: the receiver going away mid-session is
+          # the normal case here, and leaking a descriptor on each attempt is
+          # how a watchdog ticking every few seconds exhausts them.
+          sock.close rescue nil
           @@socket = nil
         end
       end
