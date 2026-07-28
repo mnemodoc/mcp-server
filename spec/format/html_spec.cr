@@ -57,4 +57,13 @@ Spectator.describe MnemodocServer::Indexer::Format::Html do
     expect(merged.content).to contain("Home")
     expect(merged.content).to contain("real content here")
   end
+
+  # An empty <h2> is not a section title. Recorded as "" it still counted as a
+  # heading, so the text after it stopped being preamble and the merge that
+  # folds a preamble into the first section had nothing left to fold.
+  it "treats an empty heading as no heading" do
+    File.write(tmp, "<html><body><h2></h2><p>Texte de corps.</p></body></html>")
+    chunks = handler.extract(tmp, mtime: 1_i64)
+    expect(chunks.map(&.heading)).to all(be_nil)
+  end
 end

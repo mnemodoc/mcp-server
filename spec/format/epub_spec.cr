@@ -26,4 +26,35 @@ Spectator.describe MnemodocServer::Indexer::Format::Epub do
     File.write(tmp, "not a zip")
     expect(handler.extract(tmp, mtime: 1_i64)).to be_empty
   end
+
+  # Alphabetical order is not reading order: ch10 sorts before ch2. The book's
+  # own order lives in the OPF spine, and chunks carry the document's sequence,
+  # so getting it wrong scrambles which chapter a passage belongs to.
+  it "follows the spine's order, not the filenames'" do
+    File.open(tmp, "w") do |file|
+      Compress::Zip::Writer.open(file) do |zip|
+        zip.add("META-INF/container.xml", <<-XML)
+        <?xml version="1.0"?>
+        <container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+          <rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles>
+        </container>
+        XML
+        zip.add("OEBPS/content.opf", <<-XML)
+        <?xml version="1.0"?>
+        <package xmlns="http://www.idpf.org/2007/opf">
+          <manifest>
+            <item id="c2" href="ch2.xhtml"/>
+            <item id="c10" href="ch10.xhtml"/>
+          </manifest>
+          <spine><itemref idref="c2"/><itemref idref="c10"/></spine>
+        </package>
+        XML
+        zip.add("OEBPS/ch2.xhtml", "<html><body><h1>Deux</h1><p>second chapter</p></body></html>")
+        zip.add("OEBPS/ch10.xhtml", "<html><body><h1>Dix</h1><p>tenth chapter</p></body></html>")
+      end
+    end
+
+    chunks = handler.extract(tmp, mtime: 1_i64)
+    expect(chunks.map(&.heading)).to eq(["Deux", "Dix"])
+  end
 end

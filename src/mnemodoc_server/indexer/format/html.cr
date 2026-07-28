@@ -41,11 +41,16 @@ module MnemodocServer
             if child.element?
               name = child.name.downcase
               next if SKIP_TAGS.includes?(name)
-              if match = name.match(HEADING)
+              if (match = name.match(HEADING)) && !child.content.strip.empty?
                 sz.heading(match[1].to_i, child.content.strip)
               else
                 visit(child, sz)
               end
+            elsif child.element? && child.name.downcase.matches?(HEADING)
+              # An empty <h2> is not a section title. Recorded as "" it still
+              # opened a section, so the text after it stopped being preamble
+              # and there was nothing left for merge_preamble to fold in.
+              visit(child, sz)
             elsif child.text?
               text = child.content.strip
               sz.text(text) unless text.empty?

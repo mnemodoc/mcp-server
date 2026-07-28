@@ -24,7 +24,11 @@ module MnemodocServer
         private def slide_names(zip : Compress::Zip::File) : Array(String)
           zip.entries.map(&.filename)
             .select!(&.matches?(SLIDE))
-            .sort_by! { |name| SLIDE.match!(name)[1].to_i }
+            # to_i? and not to_i: a part name whose number does not fit an
+            # Int32 raised, and the rescue sits at the archive level, so one
+            # absurd name cost the whole deck rather than that one slide.
+            # Unparseable numbers sort last, keeping the real slides in order.
+            .sort_by! { |name| SLIDE.match!(name)[1].to_i? || Int32::MAX }
         end
 
         # All <a:t> run texts in one slide, newline-joined.

@@ -58,4 +58,14 @@ Spectator.describe MnemodocServer::Indexer::Format::Rst do
     File.write(tmp, content)
     tmp
   end
+
+  # reStructuredText allows a title to be framed above and below. The parser
+  # only knew the underlined form, so the top rule was consumed as body text
+  # and ended up inside the preceding chunk.
+  it "recognises a title framed above and below" do
+    File.write(tmp, "======\nTitre\n======\n\nCorps du texte.\n")
+    chunks = handler.extract(tmp, mtime: 1_i64)
+    expect(chunks.map(&.heading)).to eq(["Titre"])
+    expect(chunks.first.content).to eq("Corps du texte.")
+  end
 end
