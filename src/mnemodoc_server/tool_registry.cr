@@ -69,11 +69,18 @@ module MnemodocServer
         annotations: MCP::ToolAnnotations.new(read_only_hint: true),
         schema: {type: "object", properties: {} of String => String}) { |args, progress| guarded { status.call(args, progress) } }
 
-      # Only offered when the project actually declares roles. Its description
-      # tells the model to call it before every edit, so advertising it in a
-      # project with no `context:` section bought one round-trip and one error
-      # per edit, for the whole session.
-      register_context_tool(server, context) unless config.context.roles.empty?
+      # Only offered when the project declares roles. Its description tells the
+      # model to call it before every edit, so advertising it in a project with
+      # no `context:` section bought one round-trip and one error per edit, for
+      # the whole session.
+      #
+      # Outside a project the reasoning inverts: there is no configuration to
+      # declare a role in, and the guard answers with what to do about it rather
+      # than with an error. Withholding the tool there would make this the one
+      # tool that reports a missing project by not existing.
+      if !config.context.roles.empty? || !MnemodocServer.project_initialized?
+        register_context_tool(server, context)
+      end
 
       {server: server, embedder: embedder}
     end
