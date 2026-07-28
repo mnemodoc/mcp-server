@@ -187,9 +187,16 @@ Spectator.describe "MnemodocServer daemon watch" do
         end
         Fiber.yield
         path = File.join(tmp_dir, "live.md")
-        File.write(path, "# Live\n\n## S\n\nbody")
         indexed = false
-        12.times do
+        # The file is (re)written on every turn, not once before the loop.
+        # FileWatcher snapshots the directory when it starts, and under the
+        # multi-threaded scheduler that can happen AFTER the first write — the
+        # file then belongs to the initial snapshot and never raises an event.
+        # Rewriting moves its mtime, which is a change whenever the watcher
+        # looks. Production does not have this problem: the daemon's boot crawl
+        # is what covers files that already existed.
+        20.times do
+          File.write(path, "# Live\n\n## S\n\nbody #{Random::Secure.hex(2)}")
           sleep 0.5.seconds
           if h[:store].list_files.map(&.path).includes?(path)
             indexed = true

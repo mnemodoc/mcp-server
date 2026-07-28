@@ -72,6 +72,23 @@ run = "rm -rf docs && crystal doc"
 description = "Run static code analysis"
 run = "timeout 180 bin/ameba"
 
+# Formatting is checked, not just offered. ameba's Lint/Formatting flags an
+# unformatted file, but only for the paths it inspects and only as one warning
+# among others; this fails on its own, listing every file that drifted.
+[tasks."dev:format-check"]
+description = "Fail if any source is not formatted"
+run = "crystal tool format --check src/ spec/ bench/"
+
+# The same suite under the multi-threaded scheduler. Everything fiber-based
+# here — the daemon, the proxy, SingleFlight, the connection pool, the
+# selector's description cache — is only ever exercised cooperatively
+# otherwise, and a race that needs real parallelism to show itself passes the
+# default run every time.
+[tasks."dev:spec-mt"]
+description = "Run the test suite under the multi-threaded scheduler"
+depends = ["dev:vec0-objects", "dev:licenses", "dev:build"]
+run = "crystal spec -Dpreview_mt {{vars.SPEC_OPTS}}"
+
 [tasks."dev:check"]
 description = "Build, lint and test in one shot"
 run = "mise dev:build && mise dev:ameba && mise dev:spec"

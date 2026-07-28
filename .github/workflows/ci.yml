@@ -37,6 +37,24 @@ jobs:
       - name: Run static code analysis
         run: mise dev:ameba
 
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Formatting
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Setup mise
+        uses: jdx/mise-action@v4
+
+      - name: Install dependencies
+        run: mise dev:deps
+
+      - name: Run static code analysis
+        run: mise dev:format-check
+
   test_linux:
     runs-on: ubuntu-24.04
     steps:
@@ -54,6 +72,24 @@ jobs:
 
       - name: Run tests
         run: mise dev:spec
+
+  test_linux_mt:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Tests (linux, multi-threaded)
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Setup mise
+        uses: jdx/mise-action@v4
+
+      - name: Install dependencies
+        run: mise dev:deps
+
+      - name: Run tests
+        run: mise dev:spec-mt
 
   test_linux_arm64:
     runs-on: ubuntu-24.04-arm
