@@ -84,10 +84,18 @@ run = "crystal tool format --check src/ spec/ bench/"
 # selector's description cache — is only ever exercised cooperatively
 # otherwise, and a race that needs real parallelism to show itself passes the
 # default run every time.
+# Bounded like dev:ameba, and for the same reason: a deadlock here does not
+# fail, it waits. Unbounded, one hung run holds a CI runner for hours and
+# reports nothing at all. 600s against a suite that takes about 30.
 [tasks."dev:spec-mt"]
-description = "Run the test suite under the multi-threaded scheduler"
+description = "Run the test suite with the execution context resized for parallelism"
 depends = ["dev:vec0-objects", "dev:licenses", "dev:build"]
-run = "crystal spec -Dpreview_mt {{vars.SPEC_OPTS}}"
+# The flags are those the PINNED compiler needs. On 1.20.3 execution contexts
+# are gated behind both; from 1.21 they are the default and `-Dpreview_mt`
+# switches them back off, so drop both flags when the toolchain moves.
+# spec_helper checks for the constant, so a mismatch degrades to a plain
+# single-threaded run rather than a compile error.
+run = "MNEMODOC_SPEC_PARALLEL=1 timeout 600 crystal spec -Dpreview_mt -Dexecution_context {{vars.SPEC_OPTS}}"
 
 [tasks."dev:check"]
 description = "Build, lint and test in one shot"
