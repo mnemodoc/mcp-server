@@ -17,7 +17,7 @@ module MnemodocServer
         def extract(path : String, mtime : Int64) : Array(Chunk)
           content = read_text(path)
           @assembler.assemble(path, parse_sections(content), content, mtime)
-        rescue ex : File::Error
+        rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
           [] of Chunk
         end

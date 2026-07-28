@@ -65,6 +65,11 @@ module MnemodocServer
     include YAML::Serializable
 
     property concurrency : Int32 = 4
+    # Largest document read whole, in bytes. Handlers load a file (or an
+    # archive entry) entirely into memory, so this is what stands between a
+    # stray 2 GB dump — or a small archive that expands to gigabytes — and the
+    # daemon's memory, multiplied by `concurrency`. 0 disables the limit.
+    property max_file_size : Int64 = 10_i64 * 1024 * 1024
     # Enables PDF indexing via the external `pdftotext` binary. Off by default:
     # pdftotext is not bundled, so PDF support is opt-in and degrades to a skip
     # when the binary is absent.
@@ -249,6 +254,7 @@ module MnemodocServer
       env["MNEMODOC_DB_PATH"]?.try { |v| @db.path = v }
       env_int(env, "MNEMODOC_INDEX_CONCURRENCY") { |v| @index.concurrency = v }
       env_bool(env, "MNEMODOC_INDEX_PDF") { |v| @index.pdf = v }
+      env_int(env, "MNEMODOC_INDEX_MAX_FILE_SIZE") { |v| @index.max_file_size = v.to_i64 }
       env_bool(env, "MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES") { |v| @chunking.strip_link_only_lines = v }
       env_bool(env, "MNEMODOC_CHUNKING_MERGE_PREAMBLE") { |v| @chunking.merge_preamble_into_first_section = v }
       env["MNEMODOC_EXCLUDE"]?.try { |v| @exclude = v.split(',').map(&.strip).reject(&.empty?) }
@@ -374,6 +380,7 @@ module MnemodocServer
       errors << "hook.margin_threshold must be between 0 and 1" unless (0.0..1.0).includes?(@hook.margin_threshold)
       errors << "hook.max_passages must be >= 1" unless @hook.max_passages >= 1
       errors << "index.concurrency must be >= 1" unless @index.concurrency >= 1
+      errors << "index.max_file_size must be >= 0" unless @index.max_file_size >= 0
       errors << "search.top_k must be >= 1" unless @search.top_k >= 1
       errors << "ollama.batch_size must be >= 1" unless @ollama.batch_size >= 1
       errors << "ollama.timeout must be >= 1" unless @ollama.timeout >= 1

@@ -42,4 +42,31 @@ Spectator.describe MnemodocServer::Indexer::Format::Pdf do
     handler = MnemodocServer::Indexer::Format::Pdf.new(assembler, command: "/nonexistent/pdftotext")
     expect(handler.extract(pdf, mtime: 1_i64)).to be_empty
   end
+
+  # Process.run has no timeout, so a pdftotext that never returns parks the
+  # worker fiber for good. With index.concurrency workers, that many malformed
+  # PDFs and the whole indexing run stops — waiting on results that will not
+  # come, with nothing logged to say why.
+  it "gives up on a converter that never returns" do
+    hang = File.join(Dir.tempdir, "hang-#{Random::Secure.hex(4)}.sh")
+    # exec, so the script IS the sleeping process: killing a shell that
+    # merely spawned it would leave the child holding the output pipe.
+    File.write(hang, "#!/bin/sh\nexec sleep 300\n")
+    File.chmod(hang, 0o755)
+    pdf = File.join(Dir.tempdir, "slow-#{Random::Secure.hex(4)}.pdf")
+    File.write(pdf, "%PDF-1.4\n")
+
+    handler = MnemodocServer::Indexer::Format::Pdf.new(
+      MnemodocServer::Indexer::ChunkAssembler.new, command: hang, timeout: 1.second)
+    begin
+      started = Time.monotonic
+      chunks = handler.extract(pdf, 1_i64)
+      elapsed = Time.monotonic - started
+      expect(chunks).to be_empty
+      expect(elapsed).to be < 30.seconds
+    ensure
+      File.delete(hang) rescue nil
+      File.delete(pdf) rescue nil
+    end
+  end
 end

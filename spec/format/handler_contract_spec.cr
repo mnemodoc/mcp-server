@@ -1,5 +1,6 @@
 require "../spec_helper"
 require "file_utils"
+require "compress/zip"
 
 # The contract every format handler owes the crawler, tested once for all of
 # them rather than restated per handler: whatever the bytes on disk, extract
@@ -90,6 +91,54 @@ Spectator.describe "format handler contract" do
       handler = registry.for(path, explicit: true)
       expect(handler).not_to be_nil
       expect { handler.try(&.extract(path, 0_i64)) }.not_to raise_error
+    end
+  end
+
+  # A document's compressed size says nothing about what it costs to read. An
+  # archive entry is decompressed whole into memory, so a small .docx can ask
+  # for gigabytes — multiplied by index.concurrency, that is the daemon's
+  # memory. The same holds, less dramatically, for a plain file: nothing
+  # bounded what File.read would pull in.
+  describe "documents too large to read whole" do
+    private def small_limit_registry : MnemodocServer::Indexer::Format::Registry
+      MnemodocServer::Indexer::Format::Registry.new(
+        MnemodocServer::Config.from_yaml("index:\n  max_file_size: 4096"))
+    end
+
+    it "skips an archive entry that expands past the limit" do
+      path = File.join(tmp_dir, "bomb.docx")
+      File.open(path, "w") do |file|
+        Compress::Zip::Writer.open(file) do |zip|
+          zip.add("word/document.xml") do |entry|
+            entry << "<?xml version=\"1.0\"?><w:document xmlns:w=\"w\"><w:body>"
+            2000.times { entry << "<w:p><w:t>padding padding padding</w:t></w:p>" }
+            entry << "</w:body></w:document>"
+          end
+        end
+      end
+      expect(File.size(path)).to be < 4096
+
+      handler = small_limit_registry.for(path, explicit: true)
+      expect(handler).not_to be_nil
+      expect(handler.try(&.extract(path, 0_i64)) || [] of MnemodocServer::Chunk).to be_empty
+    end
+
+    it "skips a plain file larger than the limit" do
+      path = File.join(tmp_dir, "huge.md")
+      File.write(path, "# Title\n\n" + ("mot " * 4000))
+      expect(File.size(path)).to be > 4096
+
+      handler = small_limit_registry.for(path, explicit: true)
+      expect(handler).not_to be_nil
+      expect(handler.try(&.extract(path, 0_i64)) || [] of MnemodocServer::Chunk).to be_empty
+    end
+
+    it "still reads a document within the limit" do
+      path = File.join(tmp_dir, "small.md")
+      File.write(path, "# Title\n\n## S\n\nbody")
+      handler = small_limit_registry.for(path, explicit: true)
+      chunks = handler.try(&.extract(path, 0_i64)) || [] of MnemodocServer::Chunk
+      expect(chunks).not_to be_empty
     end
   end
 end

@@ -9,10 +9,12 @@ module MnemodocServer
         Log = ::Log.for("mnemodoc-server.indexer.format.registry")
 
         def initialize(config : Config, pdf_available : Bool = !Process.find_executable("pdftotext").nil?)
+          @max_bytes = config.index.max_file_size
           @handlers = {} of String => Handler
           assembler = ChunkAssembler.new(config.chunking)
           markdown = Markdown.new(assembler)
           @plain = Plain.new(assembler)
+          @plain.max_bytes = @max_bytes
 
           register(Markdown::EXTENSIONS, markdown)
           register(Org::EXTENSIONS, Org.new(assembler))
@@ -60,7 +62,11 @@ module MnemodocServer
           @handlers.keys.to_set
         end
 
+        # Registering is also where the size limit is applied: every handler
+        # reads whole documents, and none of them should have to remember to
+        # ask the configuration for the bound.
         private def register(exts : Array(String), handler : Handler) : Nil
+          handler.max_bytes = @max_bytes
           exts.each { |ext| @handlers[ext] = handler }
         end
       end

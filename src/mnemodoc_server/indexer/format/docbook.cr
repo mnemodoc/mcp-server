@@ -19,7 +19,7 @@ module MnemodocServer
         def extract(path : String, mtime : Int64) : Array(Chunk)
           sections = NestedXml.sections(XML.parse(read_text(path)), SECTIONS, TITLES, PARAGRAPHS)
           @assembler.assemble(path, sections, "", mtime)
-        rescue ex : File::Error
+        rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
           [] of Chunk
         rescue ex

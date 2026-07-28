@@ -13,9 +13,10 @@ module MnemodocServer
         end
 
         def extract(path : String, mtime : Int64) : Array(Chunk)
+          return [] of Chunk if too_large?(path)
           sections = Compress::Zip::File.open(path) { |zip| parse(zip) }
           @assembler.assemble(path, sections, "", mtime)
-        rescue ex : File::Error
+        rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
           [] of Chunk
         rescue ex
@@ -29,8 +30,27 @@ module MnemodocServer
         abstract def parse(zip : Compress::Zip::File) : Array(Section)
 
         # Reads one archive entry as a string, or nil if absent.
+        #
+        # Bounded, because a ZIP entry's compressed size says nothing about what
+        # it costs to expand: a 100 KB archive can hold a 100 MB entry, and a
+        # `.docx` of a few megabytes can ask for gigabytes — times
+        # index.concurrency. The entry is read up to the limit and abandoned
+        # beyond it, rather than decompressed whole and then judged.
         private def read_entry(zip : Compress::Zip::File, name : String) : String?
-          zip[name]?.try &.open(&.gets_to_end)
+          entry = zip[name]?
+          return nil unless entry
+          limit = @max_bytes
+          return entry.open(&.gets_to_end) if limit <= 0
+
+          entry.open do |io|
+            buffer = IO::Memory.new
+            copied = IO.copy(io, buffer, limit + 1)
+            if copied > limit
+              Log.warn { "skipping archive entry #{name}: expands beyond index.max_file_size (#{limit})" }
+              next nil
+            end
+            buffer.to_s
+          end
         end
       end
     end
