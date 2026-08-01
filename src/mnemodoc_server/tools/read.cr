@@ -54,7 +54,9 @@ module MnemodocServer
         structured["eof"] = JSON::Any.new(offset + window.size > lines.size)
         structured["content"] = JSON::Any.new(content)
 
-        Log.debug { "read #{document.file} offset=#{offset} limit=#{limit} → #{window.size} lines" }
+        # At info, like every other tool: a read is documentation actually
+        # served, which is exactly what an audit of usage needs to see.
+        Log.info { "read #{document.file} offset=#{offset} limit=#{limit} → #{window.size} lines" }
         MCP::ToolResult.new(structured_content: JSON::Any.new(structured))
       end
     end

@@ -36,7 +36,8 @@ module MnemodocServer
         structured = document_fields(document)
         structured["sections"] = JSON::Any.new(sections)
 
-        Log.debug { "outline #{document.file} → #{sections.size} sections" }
+        # At info, like every other tool: see the note in Tools::Read.
+        Log.info { "outline #{document.file} → #{sections.size} sections" }
         MCP::ToolResult.new(structured_content: JSON::Any.new(structured))
       end
     end

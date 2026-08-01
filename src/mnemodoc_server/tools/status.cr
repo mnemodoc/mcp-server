@@ -4,6 +4,8 @@ module MnemodocServer
     # Useful for clients to verify connectivity, inspect the active Ollama model,
     # and confirm how many documents are in the index without performing a search.
     class Status
+      Log = ::Log.for("mnemodoc-server.tools.status")
+
       def initialize(@config : Config, @store : Store::SQLite)
       end
 
@@ -22,6 +24,9 @@ module MnemodocServer
           "search_mode" => JSON::Any.new(@config.search.mode),
           "db_path"     => JSON::Any.new(@config.db_path),
         } of String => JSON::Any
+        # Audit line at info, like every other tool: see the note in Tools::List.
+        Log.info { "status: #{@store.file_count} files, #{@store.chunk_count} chunks" }
+
         MCP::ToolResult.new(structured_content: JSON::Any.new(structured))
       end
     end

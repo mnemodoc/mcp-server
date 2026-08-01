@@ -263,6 +263,28 @@ re-attaches the embeddings before rewriting the chunks: `chunks_for_files`
 deliberately returns them empty, so writing those straight back through
 `index_file` would erase every vector of the file.
 
+### Every tool call is an audit line
+
+All six tools log one `info` line per call, so `server.log_file` shows what the
+server actually served without anyone reading the MCP client's transcript.
+
+This used to split along read versus write rather than along anything decided:
+`delete_file`, `ingest_path` and `get_project_context` logged at info, while
+`query_documents` logged at **debug** — off at the default level — and
+`list_files` and `status` logged nothing at all. The retrieval half of the
+server, which is the half worth auditing, was therefore the invisible half. A
+measured session bears it out: 2 320 `PreToolUse` and 1 539 `UserPromptSubmit`
+hook lines against 4 tool lines in the same 2.3 MB log.
+
+Volume is not the objection it looks like: a tool call is rare next to a
+`PreToolUse`, which fires on every edit.
+
+`spec/tool_audit_log_spec.cr` drives a real stdio session through every
+read-only tool and asserts each one appears. It runs the binary as a subprocess
+deliberately — `@@log_file` and `@@logger` are memoised process-wide and only
+`reopen_log_file!` resets them, so an in-process example cannot redirect the log
+once another spec has opened it.
+
 ### Role selection on a weak signal
 
 Two rules keep the query channel (`UserPromptSubmit`) from injecting a role
@@ -530,6 +552,7 @@ Key spec files:
 - `spec/tools_read_spec.cr` / `spec/tools_outline_spec.cr` — the two reading tools
 - `spec/backfill_documents_spec.cr` — rebuild without Ollama, embeddings preserved
 - `spec/cli_document_spec.cr` — `outline` / `read` subcommands end to end
+- `spec/tool_audit_log_spec.cr` — every tool call visible at the default log level
 - `spec/project_discovery_spec.cr` — marker walk-up, anchoring, no index dir without a project
 - `spec/uninitialized_project_spec.cr` — every tool short-circuits with the `init` invitation
 - `spec/cli_init_spec.cr` — `init` / `uninit` end to end (marker, path detection, --force)

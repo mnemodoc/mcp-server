@@ -55,8 +55,11 @@ module MnemodocServer
         results = Search::Hybrid.new(effective_config, @qdrant_index).search(query, query_vec.as(Array(Float32)), @store)
         elapsed_ms = (Time.instant - started_at).total_milliseconds.to_i
 
-        # Diagnostic trace for tuning relevance; off at the default info level.
-        Log.debug { "query=#{query.inspect} mode=#{mode} top_k=#{top_k} → #{results.size} results in #{elapsed_ms}ms" }
+        # Audit line, at info deliberately: this is the retrieval the whole
+        # server exists for, and at debug it was invisible at the default level,
+        # so the only way to check how the documentation was actually used was
+        # to read the client's own transcript.
+        Log.info { "query=#{query.inspect} mode=#{mode} top_k=#{top_k} → #{results.size} results in #{elapsed_ms}ms" }
 
         # Not truncated again: Hybrid#search already returns at most top_k, and
         # two places enforcing one invariant is one too many.

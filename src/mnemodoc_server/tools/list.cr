@@ -5,6 +5,8 @@ module MnemodocServer
     # and chunk count. Supports optional prefix filtering to narrow results
     # to a specific directory subtree.
     class List
+      Log = ::Log.for("mnemodoc-server.tools.list")
+
       def initialize(@store : Store::SQLite)
       end
 
@@ -26,6 +28,11 @@ module MnemodocServer
             "chunk_count" => JSON::Any.new(file_info.chunk_count),
           } of String => JSON::Any)
         end
+
+        # Audit line at info, like every other tool: a listing is a call an
+        # agent made, and a log that shows only the tools which change the
+        # index describes half the server.
+        Log.info { "listed #{files.size} files#{prefix.empty? ? "" : " under #{prefix}"}" }
 
         MCP::ToolResult.new(
           structured_content: JSON::Any.new({"files" => JSON::Any.new(files_data)} of String => JSON::Any)
