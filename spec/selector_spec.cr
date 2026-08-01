@@ -161,6 +161,133 @@ Spectator.describe MnemodocServer::Roles::Selector do
     expect(selection.role.name).to eq("generalist")
   end
 
+  # The semantic tie-break ranks a query against role DESCRIPTIONS, which says
+  # nothing about whether a role's rules matched. Letting roles that matched
+  # nothing into the shortlist therefore returned an arbitrary role for any
+  # prompt that happened to contain one technical word.
+  describe "shortlist of roles that actually matched" do
+    private def three_disjoint_roles
+      [
+        role("alpha", when_query: ["pipeline", "transform"], description: "crystal streams"),
+        role("beta", when_query: ["button", "display"], description: "rails views"),
+        role("gamma", when_query: ["test", "coverage"], description: "coverage"),
+      ]
+    end
+
+    # A nil embedder is the proof: reaching the tie-break at all would raise
+    # NeedSignalError, which is what used to happen here.
+    it "returns the only role that matched, without a tie-break" do
+      selector = MnemodocServer::Roles::Selector.new(three_disjoint_roles, nil, nil)
+      selection = selector.select([] of String, "", "thanks for the test, good evening")
+
+      expect(selection.role.name).to eq("gamma")
+      expect(selection.reason).to contain("unique candidate")
+    end
+
+    # Same situation with an embedder available: the tie-break must still not
+    # be consulted, and above all must not hand back a role scoring zero.
+    it "never returns a role whose rules matched nothing" do
+      with_mock_embedder do |embedder|
+        selector = MnemodocServer::Roles::Selector.new(three_disjoint_roles, nil, embedder)
+        selection = selector.select([] of String, "", "a crystal question about the test")
+
+        expect(selection.role.name).to eq("gamma")
+        expect(selection.candidates.find! { |candidate| candidate.name == "alpha" }.score).to eq(0)
+      end
+    end
+
+    it "still arbitrates semantically between roles that both matched" do
+      with_mock_embedder do |embedder|
+        roles = [
+          role("crystal", when_query: ["question"], description: "crystal conventions"),
+          role("rails", when_query: ["question"], description: "rails conventions"),
+        ]
+        selector = MnemodocServer::Roles::Selector.new(roles, nil, embedder)
+        selection = selector.select([] of String, "", "a question about rails")
+
+        expect(selection.role.name).to eq("rails")
+        expect(selection.reason).to contain("semantic")
+      end
+    end
+
+    it "carries the winning role's rule score on the selection" do
+      selector = MnemodocServer::Roles::Selector.new(three_disjoint_roles, nil, nil)
+      selection = selector.select([] of String, "", "add a test for coverage")
+
+      expect(selection.role.name).to eq("gamma")
+      expect(selection.score).to eq(2)
+    end
+  end
+
+  # A keyword used to fire anywhere inside a longer word, and the shorter the
+  # keyword the worse it got — with nothing the configuration could do about it.
+  describe "word-boundary keyword matching" do
+    it "does not fire a keyword inside a longer word" do
+      roles = [role("gamma", when_query: ["test"])]
+      default = role("generalist")
+      selector = MnemodocServer::Roles::Selector.new(roles, default, nil)
+
+      expect(selector.select([] of String, "", "can you tester this").role.name).to eq("generalist")
+      expect(selector.select([] of String, "", "an attestation").role.name).to eq("generalist")
+    end
+
+    it "fires the keyword as a whole word, whatever punctuation surrounds it" do
+      roles = [role("gamma", when_query: ["test"])]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+
+      expect(selector.select([] of String, "", "thanks for the test, bye").role.name).to eq("gamma")
+      expect(selector.select([] of String, "", "(test)").role.name).to eq("gamma")
+      expect(selector.select([] of String, "", "a TEST here").role.name).to eq("gamma")
+    end
+
+    # Keywords and prompts alike may be accented, so the boundary has to be
+    # Unicode-aware: an accented letter is part of the word, not a separator.
+    it "treats accented letters as part of a word" do
+      roles = [role("alpha", when_query: ["créé"])]
+      default = role("generalist")
+      selector = MnemodocServer::Roles::Selector.new(roles, default, nil)
+
+      expect(selector.select([] of String, "", "le fichier créé hier").role.name).to eq("alpha")
+      expect(selector.select([] of String, "", "un CAFÉ CRÉÉ").role.name).to eq("alpha")
+      expect(selector.select([] of String, "", "recréée deux fois").role.name).to eq("generalist")
+    end
+
+    it "applies the same boundary to task keywords" do
+      roles = [role("gamma", when_task: ["test"])]
+      default = role("generalist")
+      selector = MnemodocServer::Roles::Selector.new(roles, default, nil)
+
+      expect(selector.select([] of String, "tester", "").role.name).to eq("generalist")
+      expect(selector.select([] of String, "test", "").role.name).to eq("gamma")
+    end
+
+    it "restores substring matching when word_boundaries is off" do
+      roles = [role("gamma", when_query: ["test"])]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil, word_boundaries: false)
+
+      expect(selector.select([] of String, "", "can you tester this").role.name).to eq("gamma")
+    end
+
+    # A multi-word keyword is bounded at its ends, not at every space inside it.
+    it "matches a multi-word keyword as a whole" do
+      roles = [role("alpha", when_query: ["code review"])]
+      default = role("generalist")
+      selector = MnemodocServer::Roles::Selector.new(roles, default, nil)
+
+      expect(selector.select([] of String, "", "start a code review now").role.name).to eq("alpha")
+      expect(selector.select([] of String, "", "a code reviewer").role.name).to eq("generalist")
+    end
+
+    # The files channel is untouched by any of this: a glob is not a keyword,
+    # and an edited file is a strong, unambiguous signal.
+    it "leaves file-glob matching alone" do
+      roles = [role("alpha", when_files: ["**/*.cr"])]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+
+      expect(selector.select(["src/tester.cr"], "", "").role.name).to eq("alpha")
+    end
+  end
+
   # Role names are basenames, so two roles living in different directories can
   # carry the same one. The description cache was keyed on that name, so the
   # second role reused the first's embedding and the tie-break ranked it on

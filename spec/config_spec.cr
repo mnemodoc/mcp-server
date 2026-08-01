@@ -390,6 +390,33 @@ Spectator.describe MnemodocServer::Config do
       expect(role.when_query).to eq(["crystal", "shard"])
     end
 
+    # The defaults are the previous behaviour for the threshold — one keyword
+    # still admits an injection — and the FIX for matching, since substring
+    # matching was the defect, not a preference.
+    it "defaults to a threshold of one signal and to word-boundary matching" do
+      config = MnemodocServer::Config.from_yaml("")
+      expect(config.context.min_query_score).to eq(1)
+      expect(config.context.word_boundaries?).to be_true
+    end
+
+    it "parses both from YAML" do
+      yaml = <<-YAML
+      context:
+        min_query_score: 3
+        word_boundaries: false
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      expect(config.context.min_query_score).to eq(3)
+      expect(config.context.word_boundaries?).to be_false
+    end
+
+    # Zero would admit a role that matched nothing, which is the very thing the
+    # threshold exists to prevent.
+    it "rejects a threshold below one" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\ncontext:\n  min_query_score: 0")
+      expect { config.validate! }.to raise_error(ArgumentError, /context.min_query_score/)
+    end
+
     it "resolves a relative context path against source_dir" do
       config = MnemodocServer::Config.from_yaml("")
       config.source_dir = "/tmp/projX"

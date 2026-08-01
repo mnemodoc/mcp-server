@@ -121,7 +121,7 @@ src/mnemodoc_server/
     hybrid.cr                      RRF fusion + recency bias (SearchResult)
   roles/
     role.cr                        Role at runtime (config + resolved path; markdown read lazily and cached)
-    selector.cr                    Contextual-role selection (B3 cascade: weighted rules + semantic tie-break)
+    selector.cr                    Contextual-role selection (B3 cascade: weighted rules + semantic tie-break, shortlist restricted to roles that matched, word-boundary keyword matchers compiled once)
   hooks/
     input.cr                       HookInput struct: normalised client-agnostic hook payload
     adapter.cr                     Adapter interface (parse JSON::Any → HookInput; never raises on keys)
@@ -151,6 +151,35 @@ Every subcommand that returns a result accepts `--json` (one JSON object on stdo
 **Payloads evolve additively** — fields may be added, never removed or renamed. There is deliberately no schema version field.
 
 `--quiet` (on `index`, `delete`, `daemon status`, `daemon stop`) prints nothing and reports through the exit code. Two commands exit non-zero on an outcome rather than a crash: `daemon status` when no daemon is running (`systemctl is-active` semantics), and `index` when chunks failed to embed and nothing at all was indexed (an unreachable Ollama, typically) — a run with nothing to do still exits 0, and the payload carries a `failed` counter regardless. `ingest_path` refuses a path outside `paths:` and refuses a partial ingest when the embedding model has changed; both keep the index from being half-built or quietly poisoned.
+
+### Role selection on a weak signal
+
+Two rules keep the query channel (`UserPromptSubmit`) from injecting a role
+nobody asked for.
+
+**The semantic tie-break only ranks roles that matched a rule.** It compares the
+query against role *descriptions*, which says nothing about whether a role
+applies — so arbitrating among roles whose score is 0 returns an arbitrary one.
+The margin filter alone did not guarantee this: with a top score of 1 the
+threshold `top - MARGIN` is **-1**, so every role scoring 0 entered the
+shortlist, the unique-candidate guard never fired, and any conversational prompt
+carrying one incidental technical word got a role. The shortlist now requires
+`score > 0`, which is the invariant the code's own comment already claimed.
+
+**Keywords match whole words.** `when_task`/`when_query` used plain substring
+matching, so `test` fired inside `tester` and `attestation`, and the shorter the
+keyword the worse it got — with nothing the configuration could do about it.
+The patterns are compiled once per selector (the keywords are fixed by the
+config, the selector lives as long as the daemon) and spell their boundaries as
+`\p{L}\p{N}_` lookarounds rather than `\b`, whose word characters are ASCII-only
+without UCP: keywords and prompts alike are routinely accented. `word_boundaries:
+false` restores the old behaviour deliberately.
+
+`context.min_query_score` is the score the query channel requires before
+injecting; below it stdout stays **empty**, rather than falling back to the
+default role, because this runs before every user message. The files channel is
+never gated — an edited file is a strong, unambiguous signal — and neither is
+the `get_project_context` tool, which the agent calls deliberately.
 
 ### The prompt hook
 
@@ -198,7 +227,7 @@ the user's critical path.
 | `list_files` | List indexed files with metadata |
 | `delete_file` | Remove a file from the index |
 | `status` | Server status: chunk count, Ollama config, version |
-| `get_project_context` | Select the role to adopt for the current files/task/query; returns the role's markdown + structured `role`/`reason`/`candidates` |
+| `get_project_context` | Select the role to adopt for the current files/task/query; returns the role's markdown + structured `role`/`reason`/`score`/`candidates` |
 
 ## Config file format
 
@@ -243,12 +272,14 @@ chunking:             # optional noise reduction; both default false (index unch
 
 context:              # optional — contextual-role selection (get_project_context tool + `context` CLI)
   default: doc/claude/roles/generalist.md  # fallback role when no rule fires and there is no signal
+  min_query_score: 1    # rule score the query channel requires before injecting; below it, silence (>= 1)
+  word_boundaries: true # match when_task/when_query as whole words, not inside longer ones
   roles:
     - file: doc/claude/roles/backend.md    # markdown instructions; path resolved like `paths`
       description: Backend conventions      # used only for the semantic tie-break
       when_files: ["app/models/**", "app/policies/**"]  # glob triggers (File.match? on the path)
-      when_task:  ["implement", "refactor"]             # substring triggers on the task kind
-      when_query: ["operation", "policy"]               # substring triggers on the user query
+      when_task:  ["implement", "refactor"]             # keyword triggers on the task kind
+      when_query: ["operation", "policy"]               # keyword triggers on the user query
 
 server:
   sse_host: 127.0.0.1 # SSE bind address; UNAUTHENTICATED — use 0.0.0.0 only to expose deliberately

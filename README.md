@@ -278,7 +278,7 @@ Two commands exit non-zero on an outcome rather than on a crash. `daemon status`
 | `list_files` | — | — | list of indexed files with metadata |
 | `delete_file` | `path` (string) | — | confirmation |
 | `status` | — | — | version, chunk_count, file_count, model, search_mode, db_path |
-| `get_project_context` | — | `files` (string[]), `task` (string), `query` (string) | the selected role's markdown (text) + structured `role`, `reason`, `candidates` |
+| `get_project_context` | — | `files` (string[]), `task` (string), `query` (string) | the selected role's markdown (text) + structured `role`, `reason`, `score`, `candidates` |
 
 `query_documents` optional args override the config values for that request only.
 
@@ -358,6 +358,11 @@ Add a `context:` section to `.mnemodoc.yml`. Each role points at a Markdown file
 context:
   # Optional fallback when no rule fires and there is no signal to arbitrate.
   default: doc/claude/roles/generalist.md
+  # Rule score a prompt must reach for the query channel to inject anything.
+  # Default 1: one keyword is enough. Raise it where one keyword is too thin.
+  min_query_score: 1
+  # Match when_task/when_query keywords as whole words. Default true.
+  word_boundaries: true
   roles:
     - file: doc/claude/roles/backend.md
       description: Backend conventions — operations, persistence, policies
@@ -371,6 +376,12 @@ context:
 ```
 
 **Selection algorithm.** Rule hits are scored (files ×3, task ×2, query ×1). A clear winner — above a confidence threshold and ahead of the runner-up by a margin — wins outright. When rules are ambiguous, the engine doesn't guess: it embeds the bundle (files + task + query) and breaks the tie by cosine similarity against each role's `description`. With no signal at all, it falls back to `default`. The result is rule-fast when rules are decisive and embedding-smart only when they aren't.
+
+The tie-break only ever ranks roles that **actually matched a rule**. Similarity against a `description` says nothing about whether a role applies, so arbitrating among roles that matched nothing returns an arbitrary one — which is what a conversational prompt carrying one incidental technical word used to get.
+
+**Keywords match whole words.** `when_task` and `when_query` fire on word boundaries, Unicode-aware, so `test` does not fire inside `tester` or `attestation`, and an accented keyword is bounded like any other. Set `word_boundaries: false` to restore plain substring matching.
+
+**The query channel can require more than one signal.** `min_query_score` is the rule score a prompt must reach before `UserPromptSubmit` injects anything; below it the channel stays **silent** rather than falling back to the default role, since an unsolicited injection on every conversational turn costs context for nothing. The files channel is never gated: an edited file is a strong, unambiguous signal. The `get_project_context` MCP tool is not gated either — the agent asked for it deliberately, which is not the same thing as a hook firing on every turn.
 
 ### Wiring the hook
 

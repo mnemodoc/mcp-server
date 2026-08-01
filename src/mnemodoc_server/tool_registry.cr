@@ -87,6 +87,7 @@ module MnemodocServer
           properties: {
             role:       {type: "string", description: "Role name selected"},
             reason:     {type: "string", description: "Why this role was selected"},
+            score:      {type: "integer", description: "Rule score of the selected role (0 when it is the default fallback)"},
             candidates: {
               type:  "array",
               items: {

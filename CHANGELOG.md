@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Qdrant as an alternative semantic backend to the embedded vec0 index
 - `--json` and `--quiet` on the subcommands, for scripting
 - `index.max_file_size`, bounding what one document may cost to read
+- `context.min_query_score`, the rule score the query channel requires before
+  injecting a role; below it the channel stays silent instead of falling back to
+  the default role. The files channel is not gated
+- `get_project_context` and `context --json` both report the selected role's
+  rule `score`, telling a decisive match from a single weak keyword
 
 ### Changed
 - `index` exits non-zero when chunks failed to embed and nothing was indexed;
@@ -34,6 +39,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   validation instead of raising; booleans accept `true/1/yes/on` in any case
 
 ### Fixed
+- The semantic tie-break could return a role whose rules had matched nothing:
+  with a top score of 1 the margin filter admitted every role scoring 0 into the
+  shortlist, so a conversational prompt carrying one incidental technical word
+  got an arbitrary role
+- `when_task` and `when_query` keywords matched anywhere inside a word, so
+  `test` fired on `tester` and `attestation`; they now match on Unicode word
+  boundaries, with `context.word_boundaries: false` to restore the old behaviour
 - Documents with YAML frontmatter were indexed as a single headingless chunk
 - Search fusion collapsed two chunks of one file that shared a heading
 - Files that are not valid UTF-8 broke seventeen extensions' handlers

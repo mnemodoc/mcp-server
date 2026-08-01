@@ -154,6 +154,27 @@ module MnemodocServer
 
     property default : String? = nil
     property roles : Array(RoleConfig) = [] of RoleConfig
+
+    # Rule score a role must reach for the query channel (UserPromptSubmit) to
+    # inject it. Below it the channel stays silent rather than falling back to
+    # the default role: an unsolicited injection on every conversational turn
+    # costs context for nothing.
+    #
+    # Defaults to 1, which is the previous behaviour — a single query keyword
+    # still admits an injection. Raise it in a project where one keyword is too
+    # thin a signal, e.g. because its roles carry short or common keywords.
+    # The files channel (PreToolUse) is not subject to it: an edited file is a
+    # strong, unambiguous signal.
+    property min_query_score : Int32 = 1
+
+    # Match `when_query` and `when_task` keywords on word boundaries rather than
+    # anywhere inside a word. Defaults to true because plain substring matching
+    # was a defect, not a preference: a short keyword fired inside longer words
+    # ("test" in "tester", "attestation"), and the shorter the keyword the worse
+    # it got, with nothing the configuration could do about it. Set to false
+    # only to restore the old behaviour deliberately.
+    @[YAML::Field(key: "word_boundaries")]
+    property? word_boundaries : Bool = true
   end
 
   # Top-level configuration loaded from YAML, with environment overrides and
@@ -387,6 +408,9 @@ module MnemodocServer
       errors << "search.recency_days must be >= 0" unless @search.recency_days >= 0
       errors << "search.recency_boost must be >= 0" unless @search.recency_boost >= 0
       errors << "search.keyword_weight must be >= 0" unless @search.keyword_weight >= 0
+      # Zero would admit a role whose rules matched nothing at all, which is
+      # exactly what the threshold exists to keep out of the query channel.
+      errors << "context.min_query_score must be >= 1" unless @context.min_query_score >= 1
       @context.roles.each_with_index do |role, index|
         errors << "context.roles[#{index}].file must not be empty" if role.file.strip.empty?
       end

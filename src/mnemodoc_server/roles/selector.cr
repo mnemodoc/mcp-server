@@ -35,9 +35,14 @@ module MnemodocServer
       # True only when the role is the configured default returned as a fallback
       # (no rule fired). Lets the query channel stay silent on undecided prompts.
       getter? default : Bool
+      # Rule score of the chosen role. Exposed so a caller can require more than
+      # one signal before acting on the selection — the query channel does, via
+      # `context.min_query_score`. Zero for the default fallback, which by
+      # definition matched no rule.
+      getter score : Int32
 
       def initialize(@role : Role, @reason : String, @candidates : Array(Candidate),
-                     @default : Bool = false)
+                     @default : Bool = false, @score : Int32 = 0)
       end
     end
 
@@ -58,10 +63,49 @@ module MnemodocServer
       # base_dir is the config file's directory: when_files globs are relative to
       # it, so anchoring them there lets absolute file paths (fed by PreToolUse
       # hooks) match. Nil keeps the historical relative-only matching.
+      #
+      # word_boundaries decides how when_task/when_query keywords are matched;
+      # see the keyword matcher below for why the boundary form is the default.
+      @matchers : Hash(String, {task: Array(Regex), query: Array(Regex)})
+
       def initialize(@roles : Array(Role), @default : Role?, @embedder : Indexer::Embedder?,
-                     @base_dir : String? = nil)
+                     @base_dir : String? = nil, @word_boundaries : Bool = true)
         @desc_cache = {} of String => Array(Float32)
         @desc_mutex = Mutex.new
+        @matchers = build_matchers
+      end
+
+      # Keyword patterns, compiled once per selector rather than per call: the
+      # keywords are fixed by the configuration, while a daemon selector serves
+      # every request for the life of the process.
+      #
+      # Keyed on the resolved file, not the role name, for the same reason the
+      # description cache is: names are basenames, so two roles in different
+      # directories can share one.
+      private def build_matchers : Hash(String, {task: Array(Regex), query: Array(Regex)})
+        matchers = {} of String => {task: Array(Regex), query: Array(Regex)}
+        @roles.each do |role|
+          matchers[role.resolved_file] = {
+            task:  role.config.when_task.map { |keyword| keyword_pattern(keyword) },
+            query: role.config.when_query.map { |keyword| keyword_pattern(keyword) },
+          }
+        end
+        matchers
+      end
+
+      # A keyword must match a whole word, not a fragment of a longer one:
+      # plain substring matching fired "test" inside "tester" and "attestation",
+      # and the shorter the keyword the worse it got.
+      #
+      # The boundaries are spelled out as Unicode letter/number/underscore
+      # classes rather than `\b`, whose word characters are ASCII-only unless
+      # UCP is enabled — keywords and prompts alike are routinely accented, and
+      # an accented letter belongs to the word rather than separating it.
+      # Both lookarounds are one character wide, which PCRE2 accepts behind.
+      private def keyword_pattern(keyword : String) : Regex
+        escaped = Regex.escape(keyword)
+        return Regex.new(escaped, Regex::Options::IGNORE_CASE) unless @word_boundaries
+        Regex.new("(?<![\\p{L}\\p{N}_])#{escaped}(?![\\p{L}\\p{N}_])", Regex::Options::IGNORE_CASE)
       end
 
       # Builds a selector from the context section of the config, resolving each
@@ -75,7 +119,8 @@ module MnemodocServer
         default_role = config.context.default.try do |path|
           Role.new(RoleConfig.new(file: path), config.resolve_context_path(path))
         end
-        new(roles, default_role, embedder, config.source_dir)
+        new(roles, default_role, embedder, config.source_dir,
+          word_boundaries: config.context.word_boundaries?)
       end
 
       # Runs the B3 cascade and returns the chosen role with its rationale.
@@ -88,10 +133,19 @@ module MnemodocServer
         runner_score = scored.size > 1 ? scored[1][:score] : 0
 
         if top[:score] >= WEAK_THRESHOLD && (top[:score] - runner_score) >= MARGIN
-          return Selection.new(top[:role], rule_reason(top[:role], files, task, query, top[:score]), candidates)
+          return Selection.new(top[:role], rule_reason(top[:role], files, task, query, top[:score]),
+            candidates, score: top[:score])
         end
 
-        shortlist = scored.select { |entry| entry[:score] >= top[:score] - MARGIN }.map { |entry| entry[:role] }
+        # Only roles that actually matched a rule may reach the tie-break. The
+        # margin alone does not ensure that: with a top score of 1 the threshold
+        # is -1, so every role scoring 0 joined the shortlist, the unique-
+        # candidate guard below never fired, and the semantic step arbitrated
+        # between roles whose rules had matched nothing — returning one of them
+        # for any prompt that happened to carry one technical word.
+        shortlist = scored
+          .select { |entry| entry[:score] > 0 && entry[:score] >= top[:score] - MARGIN }
+          .map { |entry| entry[:role] }
 
         # A positive-but-weak score with no rival is still a real, unique signal,
         # so it wins outright. The `> 0` guard matters: a top score of 0 means no
@@ -99,7 +153,8 @@ module MnemodocServer
         # rather than be announced as a "unique candidate".
         if shortlist.size == 1 && top[:score] > 0
           return Selection.new(shortlist.first,
-            "weak rule match, unique candidate → #{shortlist.first.name} (score #{top[:score]})", candidates)
+            "weak rule match, unique candidate → #{shortlist.first.name} (score #{top[:score]})",
+            candidates, score: top[:score])
         end
 
         # No rule fired at all (top score 0): there is nothing for the semantic
@@ -122,7 +177,16 @@ module MnemodocServer
         pick = semantic_pick(shortlist, bundle)
         Selection.new(pick[:role],
           "rules ambiguous (top #{top[:score]}); semantic tie-break → #{pick[:role].name} (cos #{pick[:cosine].round(2)})",
-          candidates)
+          candidates, score: score_of(scored, pick[:role], top[:score]))
+      end
+
+      # Rule score of the role the tie-break picked. It is one of the shortlist,
+      # so it is always in `scored`; the fallback is there only to keep the
+      # return type an Int32 without an unwrap that could raise on a caller's
+      # behalf.
+      private def score_of(scored, role : Role, fallback : Int32) : Int32
+        entry = scored.find(&.[:role].same?(role))
+        entry ? entry[:score] : fallback
       end
 
       private def score_all(files : Array(String), task : String, query : String)
@@ -156,14 +220,19 @@ module MnemodocServer
 
       private def task_hits(role : Role, task : String) : Int32
         return 0 if task.empty?
-        lower = task.downcase
-        role.config.when_task.count { |keyword| lower.includes?(keyword.downcase) }
+        patterns_for(role)[:task].count(&.matches?(task))
       end
 
       private def query_hits(role : Role, query : String) : Int32
         return 0 if query.empty?
-        lower = query.downcase
-        role.config.when_query.count { |keyword| lower.includes?(keyword.downcase) }
+        patterns_for(role)[:query].count(&.matches?(query))
+      end
+
+      # The default role is not among @roles, so it has no precompiled entry.
+      # It carries no triggers either — it is a fallback, not a candidate — so
+      # an empty set is the right answer rather than a missing-key error.
+      private def patterns_for(role : Role) : {task: Array(Regex), query: Array(Regex)}
+        @matchers[role.resolved_file]? || {task: [] of Regex, query: [] of Regex}
       end
 
       private def context_bundle(files : Array(String), task : String, query : String) : String

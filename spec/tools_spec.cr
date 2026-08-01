@@ -215,6 +215,10 @@ Spectator.describe "MnemodocServer tools" do
         expect(sc["role"].as_s).to eq("crystal")
         expect(sc["reason"].as_s).not_to be_empty
         expect(sc["candidates"].as_a.first["name"].as_s).to eq("crystal")
+        # The chosen role's rule score, so a caller can tell a decisive match
+        # from a single weak keyword — the same number the `context` CLI
+        # reports under --json. Files ×3 + task ×2 here.
+        expect(sc["score"].as_i).to eq(5)
         # Text block carries the role markdown
         expect(result.content.first.to_json_object["text"].as_s).to contain("Crystal expert")
       ensure

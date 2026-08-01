@@ -31,9 +31,14 @@ module MnemodocServer
           } of String => JSON::Any)
         end
 
+        # `score` is the chosen role's rule score, letting a caller tell a
+        # decisive match from a single weak keyword. The tool itself applies no
+        # threshold: it is called deliberately by the agent, unlike the hook
+        # that fires on every turn and which `context.min_query_score` gates.
         structured = {
           "role"       => JSON::Any.new(selection.role.name),
           "reason"     => JSON::Any.new(selection.reason),
+          "score"      => JSON::Any.new(selection.score.to_i64),
           "candidates" => JSON::Any.new(candidates_data),
         } of String => JSON::Any
 

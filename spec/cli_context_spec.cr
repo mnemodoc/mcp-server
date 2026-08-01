@@ -159,6 +159,75 @@ Spectator.describe "context CLI command" do
     expect(result[:out]).to contain("Policies role")
   end
 
+  # A project whose keywords are short or common can find one hit too thin a
+  # signal to spend context on. The threshold raises the bar for the query
+  # channel alone, and below it the channel says nothing at all rather than
+  # falling back to the default role on every conversational turn.
+  describe "context.min_query_score" do
+    private def write_fixture_with_threshold(threshold : Int32)
+      File.write(File.join(tmp_dir, "generalist.md"), "# Generalist role\nDefault conventions.")
+      File.write(File.join(tmp_dir, "policies.md"), "# Policies role\nScope ownership.")
+      File.write(config_path, <<-YAML)
+      server:
+        log_file: #{log_path}
+      context:
+        default: generalist.md
+        min_query_score: #{threshold}
+        roles:
+          - file: policies.md
+            when_files: ["app/policies/**"]
+            when_query: ["policy", "ownership"]
+      YAML
+    end
+
+    it "stays silent when a single keyword falls short of the threshold" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_threshold(2)
+      payload = %({"session_id":"x","hook_event_name":"UserPromptSubmit","prompt":"une question de policy"})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to be_empty
+      # Silence on stdout, never in the audit trail: the turn stays traceable.
+      expect(File.read(log_path)).to contain("event=UserPromptSubmit")
+    end
+
+    it "injects once the query carries enough signal" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_threshold(2)
+      payload = %({"session_id":"x","hook_event_name":"UserPromptSubmit","prompt":"une policy de scope ownership"})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to contain("Policies role")
+    end
+
+    # An edited file is a strong, unambiguous signal, and the threshold has no
+    # business gating it.
+    it "does not gate the files channel" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_threshold(9)
+      payload = %({"session_id":"x","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"app/policies/thing.rb"}})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to contain("Policies role")
+    end
+
+    # Under --json the payload is always emitted; suppression is a field, since
+    # an empty stdout would be indistinguishable from a failure.
+    it "reports the suppression under --json rather than emitting nothing" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_threshold(2)
+      payload = %({"session_id":"x","hook_event_name":"UserPromptSubmit","prompt":"une question de policy"})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin", "--json"], payload)
+
+      payload_json = JSON.parse(result[:out])
+      expect(payload_json["suppressed"].as_bool).to be_true
+      expect(payload_json["score"].as_i).to eq(1)
+    end
+  end
+
   it "always prints the default role on a cross-cutting PreToolUse edit" do
     skip "build the binary first (mise dev:build)" unless File.exists?(binary)
     write_fixture_with_default

@@ -443,7 +443,7 @@ module MnemodocServer
         # generalist context, so we stay silent. The audit line above is still
         # written, keeping the trace even when stdout is suppressed. The files
         # channel (PreToolUse) always prints, covering cross-cutting edits.
-        suppressed = suppress_default_for_query?(input, selection)
+        suppressed = suppress_for_query?(input, selection, config)
 
         # Under --json the payload is always emitted, `suppressed` carrying what
         # the text mode expresses by staying silent — an empty stdout would be
@@ -454,6 +454,7 @@ module MnemodocServer
             role:       selection.role.name,
             reason:     selection.reason,
             default:    selection.default?,
+            score:      selection.score,
             suppressed: suppressed,
             candidates: selection.candidates.map { |candidate| {name: candidate.name, score: candidate.score} },
             content:    selection.role.content,
@@ -467,11 +468,20 @@ module MnemodocServer
         embedder.try(&.close)
       end
 
-      # True when stdout must stay empty: a UserPromptSubmit event whose selection
-      # is the default-role fallback. Other events (PreToolUse) and decisive
-      # domain matches always print.
-      private def suppress_default_for_query?(input : Hooks::HookInput, selection : Roles::Selection) : Bool
-        input.event == "UserPromptSubmit" && selection.default?
+      # True when stdout must stay empty. Two reasons, both confined to the
+      # UserPromptSubmit event: the selection is the default-role fallback, or
+      # its rule score falls short of `context.min_query_score`.
+      #
+      # Silence, rather than the default role, is the point: this runs before
+      # every user message, and injecting a generalist role on each turn spends
+      # context on a prompt that gave no reason to think it needed one.
+      #
+      # Other events are untouched. A PreToolUse edit names a file, which is a
+      # strong and unambiguous signal, so it always prints.
+      private def suppress_for_query?(input : Hooks::HookInput, selection : Roles::Selection,
+                                      config : Config) : Bool
+        return false unless input.event == "UserPromptSubmit"
+        selection.default? || selection.score < config.context.min_query_score
       end
 
       # Builds the selection inputs. Without --hook-stdin this is just the flags

@@ -58,12 +58,14 @@ index:
 # at hand. Role file paths resolve relative to this config file, like `paths`.
 # context:
 #   default: doc/claude/roles/generalist.md  # fallback when no rule fires and there is no signal
+#   min_query_score: 1     # rule score a prompt must reach for the query channel to inject; below it, silence
+#   word_boundaries: true  # match when_task/when_query keywords as whole words, not inside longer ones
 #   roles:
 #     - file: doc/claude/roles/backend.md
 #       description: Backend conventions — operations, persistence, policies  # used for the semantic tie-break
 #       when_files: ["app/models/**", "app/policies/**"]  # glob triggers on the edited file paths
-#       when_task:  ["implement", "refactor"]             # substring triggers on the task kind
-#       when_query: ["operation", "policy", "persistence"] # substring triggers on the user query
+#       when_task:  ["implement", "refactor"]             # keyword triggers on the task kind
+#       when_query: ["operation", "policy", "persistence"] # keyword triggers on the user query
 #     - file: doc/claude/roles/frontend.md
 #       description: Stimulus controllers, Turbo Streams, HAML views
 #       when_files: ["app/frontend/**", "app/views/**"]
