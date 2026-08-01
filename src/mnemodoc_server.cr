@@ -18,6 +18,7 @@ require "file_utils"
 
 require "./mnemodoc_server/helpers"
 require "./mnemodoc_server/advisories"
+require "./mnemodoc_server/progress"
 require "./mnemodoc_server/project"
 require "./mnemodoc_server/install/claude_code"
 require "./mnemodoc_server/licenses"
@@ -73,10 +74,16 @@ require "./mnemodoc_server/tool_registry"
 require "./mnemodoc_server/*"
 
 module MnemodocServer
-  Log = ::Log.for("mnemodoc-server")
+  # The root source every binding is expressed against, so that raising and
+  # restoring the severity targets exactly what `setup_log!` bound.
+  LOG_SOURCE = "mnemodoc-server"
+
+  Log = ::Log.for(LOG_SOURCE)
 
   @@log_file : IO? = nil
   @@logger : ::Log::IOBackend? = nil
+  # Set only while a progress bar owns stderr; holds the severity to put back.
+  @@hushed_level : ::Log::Severity? = nil
   # Defaults to true so that anything constructing a store or a tool registry
   # without going through `init_app!` behaves exactly as before. Only discovery
   # can flip it to false, and only when it actually failed to find a project.
@@ -150,6 +157,44 @@ module MnemodocServer
   # stderr/stdout streams are left untouched. Safe to call unconditionally.
   def self.close_log_file! : Nil
     @@log_file.try(&.close) if log_to_real_file?
+  end
+
+  # Holds back info-level logging while a progress bar owns stderr.
+  #
+  # The bar rewrites its own line, so an info entry landing in the middle of it
+  # produces "20%2026-08-01T01:00:16 INFO - indexed ..." and leaves neither
+  # readable. Only one writer may own the stream at a time, and the caller has
+  # already established that the log is going to stderr before asking for this.
+  #
+  # Warnings and above are deliberately left alone: they are rare, and dropping
+  # one to keep a bar tidy would be a poor trade.
+  #
+  # Rebinding the SAME backend only replaces the severity of the existing
+  # bindings (Log::Builder#append_backend), so nothing is duplicated and no
+  # dispatcher fiber is created.
+  def self.hush_log! : Nil
+    return if @@hushed_level
+    log = ::Log.for(LOG_SOURCE)
+    backend = log.backend
+    return unless backend
+
+    @@hushed_level = log.level
+    ::Log.builder.bind("#{LOG_SOURCE}.*", :warn, backend)
+  end
+
+  # Restores the severity `hush_log!` raised. A no-op when nothing was hushed,
+  # since callers release from an ensure block on paths that may have failed
+  # before the bar was ever put up.
+  def self.release_log! : Nil
+    level = @@hushed_level
+    return unless level
+    @@hushed_level = nil
+
+    log = ::Log.for(LOG_SOURCE)
+    backend = log.backend
+    return unless backend
+
+    ::Log.builder.bind("#{LOG_SOURCE}.*", level, backend)
   end
 
   # Reopens the log destination from scratch: drops the current file handle and

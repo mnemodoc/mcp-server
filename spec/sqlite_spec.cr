@@ -31,7 +31,7 @@ Spectator.describe MnemodocServer::Store::SQLite do
 
   after_each do
     store.close
-    File.delete(tmp_db) rescue nil
+    delete_db(tmp_db)
   end
 
   describe "#chunks_fts sync" do
@@ -105,7 +105,7 @@ Spectator.describe MnemodocServer::Store::SQLite do
       expect(db.chunk_count).to eq(2_i64)
       expect(db.fts_chunk_count).to eq(2_i64)
       db.close
-      File.delete(novec_db) rescue nil
+      delete_db(novec_db)
     end
 
     it "reads ids, hydrated chunks, and embeddings by id/file" do
@@ -294,20 +294,24 @@ Spectator.describe MnemodocServer::Store::SQLite do
 
   describe "sqlite-vec" do
     it "exposes vec_version() on every connection" do
-      db = MnemodocServer::Store::SQLite.new("/tmp/vec-ver-#{Random::Secure.hex(4)}.db")
+      path = "/tmp/vec-ver-#{Random::Secure.hex(4)}.db"
+      db = MnemodocServer::Store::SQLite.new(path)
       version = db.vec_version
       expect(version).to start_with("v0.")
       db.close
+      delete_db(path)
     end
 
     it "can create and query a vec0 virtual table" do
-      db = MnemodocServer::Store::SQLite.new("/tmp/vec-knn-#{Random::Secure.hex(4)}.db")
+      path = "/tmp/vec-knn-#{Random::Secure.hex(4)}.db"
+      db = MnemodocServer::Store::SQLite.new(path)
       begin
         # Direct SQL to prove vec0 works end-to-end
         version = db.vec_version
         expect(version).not_to be_empty
       ensure
         db.close
+        delete_db(path)
       end
     end
   end
@@ -373,7 +377,7 @@ Spectator.describe MnemodocServer::Store::SQLite do
 
   describe "vec_chunks" do
     let(tmp_db) { "/tmp/mnemodoc-vec-#{Random::Secure.hex(4)}.db" }
-    after_each { File.delete(tmp_db) rescue nil }
+    after_each { delete_db(tmp_db) }
 
     private def make_store : MnemodocServer::Store::SQLite
       MnemodocServer::Store::SQLite.new(tmp_db)
@@ -495,7 +499,7 @@ Spectator.describe MnemodocServer::Store::SQLite do
         expect(by_content["orthogonal"]).to be_close(0.0, 1e-4)
       ensure
         store.close
-        File.delete(db) rescue nil
+        delete_db(db)
       end
     end
 

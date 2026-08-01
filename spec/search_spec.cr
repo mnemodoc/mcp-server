@@ -71,7 +71,7 @@ Spectator.describe MnemodocServer::Search do
     subject(store) { MnemodocServer::Store::SQLite.new(tmp_db) }
     after_each do
       store.close
-      File.delete(tmp_db) rescue nil
+      delete_db(tmp_db)
     end
 
     private def index!(store, file : String, content : String, heading : String? = nil)
@@ -141,7 +141,7 @@ Spectator.describe MnemodocServer::Search do
 
   describe "Semantic#search via store" do
     let(tmp_db) { "/tmp/mnemodoc-sem-#{Random::Secure.hex(4)}.db" }
-    after_each { File.delete(tmp_db) rescue nil }
+    after_each { delete_db(tmp_db) }
 
     # Builds a 768-dim unit vector whose first element is 1.0 and the rest are seed,
     # then normalizes. This guarantees distinct directions for different seeds because
@@ -236,7 +236,7 @@ Spectator.describe MnemodocServer::Search do
       store.save_chunks(big + small)
       results = hybrid.search("cron", [] of Float32, store)
       store.close
-      File.delete(tmp_db) rescue nil
+      delete_db(tmp_db)
       # The small file's single chunk must not be buried under the big file's chunks:
       # its per-chunk keyword mass is higher because the big file's mass is split 10 ways.
       expect(results.first.chunk.file_path).to eq("small.md")
@@ -248,7 +248,7 @@ Spectator.describe MnemodocServer::Search do
     subject(store) { MnemodocServer::Store::SQLite.new(tmp_db, vec0: false) }
     after_each do
       store.close
-      File.delete(tmp_db) rescue nil
+      delete_db(tmp_db)
     end
 
     private def index!(store, file : String, content : String)
@@ -331,7 +331,7 @@ Spectator.describe MnemodocServer::Search do
         expect(results.last.score).to be_close(1.0 / 62, 1e-6)
       ensure
         store.close
-        File.delete(db) rescue nil
+        delete_db(db)
       end
     end
 
@@ -349,7 +349,7 @@ Spectator.describe MnemodocServer::Search do
         expect(best.score).to be > 0.0
       ensure
         store.close
-        File.delete(db) rescue nil
+        delete_db(db)
       end
     end
 
@@ -365,7 +365,7 @@ Spectator.describe MnemodocServer::Search do
         expect(results.first.similarity).to be_nil
       ensure
         store.close
-        File.delete(db) rescue nil
+        delete_db(db)
       end
     end
   end

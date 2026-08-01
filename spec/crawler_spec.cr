@@ -96,7 +96,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(qdrant.deletes.sort!).to eq(ids_before.sort!)
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -127,7 +127,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(store.chunk_count).to be > 0
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -155,7 +155,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(result[:skipped]).to eq(1)
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -216,7 +216,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(result[:failed]).to be > 0
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -241,7 +241,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(result[:failed]).to eq(0)
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -262,11 +262,13 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
   describe "#files_to_index" do
     it "returns files not yet indexed" do
       write_file("a.md", "content")
-      store = MnemodocServer::Store::SQLite.new("/tmp/mnemodoc-crawler-idx-#{Random::Secure.hex(4)}.db")
+      db_path = "/tmp/mnemodoc-crawler-idx-#{Random::Secure.hex(4)}.db"
+      store = MnemodocServer::Store::SQLite.new(db_path)
       crawler = MnemodocServer::Indexer::Crawler.new([tmp_dir], default_registry)
       to_index = crawler.files_to_index(store)
       expect(to_index.map { |file_entry| File.basename(file_entry[:path]) }).to eq(["a.md"])
       store.close
+      delete_db(db_path)
     end
 
     it "excludes already-indexed files with same mtime" do
@@ -278,6 +280,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
       to_index = crawler.files_to_index(store)
       expect(to_index).to be_empty
       store.close
+      delete_db(db_path)
     end
   end
 
@@ -308,12 +311,53 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         crawler.run(store, embedder, sf, concurrency: 1, progress: progress)
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
 
         expect(calls.size).to eq(2)
         expect(calls.map(&.[:total]).uniq!).to eq([2])
         expect(calls.map(&.[:indexed]).sort!).to eq([1, 2])
         expect(calls.all?(&.[:file].ends_with?(".md"))).to be_true
+      end
+    end
+
+    # The reporter counts files PROCESSED against a total of files to process.
+    # Counting successes against that same total left the last call short of
+    # the total whenever a file yielded nothing — a progress bar built on it
+    # would stall below 100% and never reach the end of a run that did finish.
+    it "reaches the total even when a file yields nothing" do
+      embedding = Array(Float32).new(768, 0.1_f32)
+
+      fake_ollama(embedding) do |port|
+        write_file("a-empty.md", "")
+        write_file("b-full.md", "## Section\ncontent b")
+
+        config = MnemodocServer::Config.from_yaml(
+          "ollama:\n  host: http://127.0.0.1:#{port}\n  model: test"
+        )
+        # Inside tmp_dir, which after_each removes whole: deleting just the .db
+        # leaves its -wal and -shm behind.
+        db_path = File.join(tmp_dir, "index-partial.db")
+        store = MnemodocServer::Store::SQLite.new(db_path)
+
+        calls = [] of {processed: Int32, total: Int32}
+        progress = Proc(Int32, Int32, String, Nil).new do |processed, total, _file|
+          calls << {processed: processed, total: total}
+        end
+
+        registry = MnemodocServer::Indexer::Format::Registry.new(config)
+        crawler = MnemodocServer::Indexer::Crawler.new([tmp_dir], registry)
+        embedder = MnemodocServer::Indexer::Embedder.new(config.ollama)
+
+        result = crawler.run(store, embedder, MnemodocServer::SingleFlight.new,
+          concurrency: 1, progress: progress)
+
+        store.close
+
+        expect(calls.map(&.[:processed])).to eq([1, 2])
+        expect(calls.last[:processed]).to eq(calls.last[:total])
+        # The count reported back to the user still counts successes only:
+        # the empty file was processed, it was not indexed.
+        expect(result[:indexed]).to eq(1)
       end
     end
 
@@ -337,9 +381,61 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         result = crawler.run(store, embedder, sf, concurrency: 1, progress: nil)
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
 
         expect(result[:indexed]).to eq(1)
+      end
+    end
+  end
+
+  # The scan is where a large repository spends its first silent seconds, and
+  # it cannot report a fraction: the denominator is what it is busy finding.
+  describe "#collect_files with a scan reporter" do
+    it "reports a running count, one call per retained file" do
+      write_file("a.md", "# A")
+      write_file("sub/b.md", "# B")
+      write_file("c.png", "not a document")
+
+      counts = [] of Int32
+      crawler = MnemodocServer::Indexer::Crawler.new([tmp_dir], default_registry)
+      files = crawler.collect_files(scan_progress: ->(found : Int32) { counts << found })
+
+      expect(files.size).to eq(2)
+      expect(counts).to eq([1, 2])
+    end
+
+    it "collects exactly the same files without a reporter" do
+      write_file("a.md", "# A")
+      write_file("sub/b.md", "# B")
+
+      crawler = MnemodocServer::Indexer::Crawler.new([tmp_dir], default_registry)
+      expect(crawler.collect_files.map(&.[:path]))
+        .to eq(crawler.collect_files(scan_progress: nil).map(&.[:path]))
+    end
+
+    it "reports the scan of a run through the same reporter" do
+      embedding = Array(Float32).new(768, 0.1_f32)
+
+      fake_ollama(embedding) do |port|
+        write_file("a.md", "## Section\ncontent a")
+
+        config = MnemodocServer::Config.from_yaml(
+          "ollama:\n  host: http://127.0.0.1:#{port}\n  model: test"
+        )
+        db_path = File.join(tmp_dir, "index-scan.db")
+        store = MnemodocServer::Store::SQLite.new(db_path)
+
+        counts = [] of Int32
+        registry = MnemodocServer::Indexer::Format::Registry.new(config)
+        crawler = MnemodocServer::Indexer::Crawler.new([tmp_dir], registry)
+        embedder = MnemodocServer::Indexer::Embedder.new(config.ollama)
+
+        crawler.run(store, embedder, MnemodocServer::SingleFlight.new,
+          concurrency: 1, scan_progress: ->(found : Int32) { counts << found })
+
+        store.close
+
+        expect(counts).to eq([1])
       end
     end
   end
@@ -372,7 +468,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(remaining).to eq(["a.md"])
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -404,7 +500,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(remaining).to eq(["real.md"])
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -435,7 +531,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(store.list_files.size).to eq(1)
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end
@@ -463,7 +559,7 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
         expect(store.list_files.map { |file_info| File.basename(file_info.path) }).to eq(["notes.md"])
 
         store.close
-        File.delete(db_path) rescue nil
+        delete_db(db_path)
         embedder.close
       end
     end

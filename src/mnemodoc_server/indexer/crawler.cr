@@ -18,7 +18,12 @@ module MnemodocServer
       # extensions (explicit: false). A file entry is taken as-is (explicit:
       # true) so the registry can fall back to plain text for unknown
       # extensions. Missing entries are skipped with a warning.
-      def collect_files : Array({path: String, mtime: Int64, explicit: Bool})
+      #
+      # scan_progress, when given, is called with the running count of retained
+      # files. It reports a count rather than a fraction because the total is
+      # precisely what this method is busy discovering — and on a large tree
+      # this is where a run spends its first silent seconds.
+      def collect_files(scan_progress : Proc(Int32, Nil)? = nil) : Array({path: String, mtime: Int64, explicit: Bool})
         files = [] of {path: String, mtime: Int64, explicit: Bool}
         @paths.each do |entry|
           expanded = File.expand_path(entry)
@@ -27,10 +32,10 @@ module MnemodocServer
               next unless File.file?(path)
               next unless @registry.supported?(File.extname(path))
               next if excluded?(path)
-              add_file(files, path, explicit: false)
+              add_file(files, path, explicit: false, scan_progress: scan_progress)
             end
           elsif File.file?(expanded)
-            add_file(files, expanded, explicit: true) unless excluded?(expanded)
+            add_file(files, expanded, explicit: true, scan_progress: scan_progress) unless excluded?(expanded)
           else
             Log.warn { "path does not exist, skipping: #{expanded}" }
           end
@@ -44,10 +49,13 @@ module MnemodocServer
         files.sort_by { |file_entry| file_entry[:path] }
       end
 
-      # Stats and appends a file entry; skips on stat failure.
-      private def add_file(files : Array({path: String, mtime: Int64, explicit: Bool}), path : String, explicit : Bool) : Nil
+      # Stats and appends a file entry; skips on stat failure. A file that
+      # cannot be stat'ed is not retained, so it is not reported either.
+      private def add_file(files : Array({path: String, mtime: Int64, explicit: Bool}), path : String, explicit : Bool,
+                           scan_progress : Proc(Int32, Nil)? = nil) : Nil
         mtime = File.info(path).modification_time.to_unix
         files << {path: path, mtime: mtime, explicit: explicit}
+        scan_progress.try(&.call(files.size))
       rescue File::Error
         Log.warn { "cannot stat #{path}, skipping" }
       end
@@ -61,8 +69,10 @@ module MnemodocServer
       # prunes store entries no longer present (under roots that still exist).
       # Returns a named tuple with indexed, skipped, pruned, and failed counts.
       # failed is the total number of chunks that could not be embedded across the run.
-      def run(store : Store::SQLite, embedder : Embedder, sf : SingleFlight, concurrency : Int32 = 4, progress : Proc(Int32, Int32, String, Nil)? = nil) : {indexed: Int32, skipped: Int32, pruned: Int32, failed: Int32}
-        all_files = collect_files
+      def run(store : Store::SQLite, embedder : Embedder, sf : SingleFlight, concurrency : Int32 = 4,
+              progress : Proc(Int32, Int32, String, Nil)? = nil,
+              scan_progress : Proc(Int32, Nil)? = nil) : {indexed: Int32, skipped: Int32, pruned: Int32, failed: Int32}
+        all_files = collect_files(scan_progress: scan_progress)
         candidate_set = Set(String).new(all_files.map { |file| file[:path] })
         to_index = all_files.reject { |file| store.file_indexed?(file[:path], mtime: file[:mtime]) }
         skipped = all_files.size - to_index.size
@@ -112,14 +122,22 @@ module MnemodocServer
           jobs.close
         end
 
-        # Collect exactly to_index.size results and fire the progress callback
+        # Collect exactly to_index.size results and fire the progress callback.
+        #
+        # Two counters, deliberately: `processed` is what the reporter gets,
+        # against a total of files to process, so the last call always lands on
+        # the total. `count` is what the caller gets, and only counts files
+        # actually indexed. Reporting successes against a total of files left
+        # progress stuck below its end whenever a file yielded nothing.
         count = 0
+        processed = 0
         total_failed = 0
         to_index.size.times do
           result = results.receive
+          processed += 1
           count += 1 if result[:success]
           total_failed += result[:failed]
-          progress.try(&.call(count, to_index.size, result[:path]))
+          progress.try(&.call(processed, to_index.size, result[:path]))
         end
         {count, total_failed}
       end

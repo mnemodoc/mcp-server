@@ -12,7 +12,7 @@ Spectator.describe "MnemodocServer tools" do
   before_each { Dir.mkdir_p(tmp_dir) }
   after_each do
     store.close
-    File.delete(tmp_db) rescue nil
+    delete_db(tmp_db)
     FileUtils.rm_rf(tmp_dir)
   end
 

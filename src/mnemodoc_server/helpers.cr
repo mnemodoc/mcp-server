@@ -13,6 +13,18 @@ module MnemodocServer
     "#{VERSION} (#{ref})"
   end
 
+  # Formats an elapsed duration into the largest fitting unit (ms/s/m).
+  # A first crawl of a large repository runs for minutes while a re-index with
+  # nothing to do returns in milliseconds, and one unit cannot state both
+  # without printing either "0.4s" or "184000ms".
+  def self.format_duration(span : Time::Span) : String
+    case span
+    when .>= 1.minute then "#{span.total_minutes.to_i}m#{(span.total_seconds.to_i % 60).to_s.rjust(2, '0')}s"
+    when .>= 1.second then "#{span.total_seconds.round(1)}s"
+    else                   "#{span.total_milliseconds.round.to_i}ms"
+    end
+  end
+
   # Formats a byte count into the largest fitting binary unit (B/KB/MB/GB).
   def self.format_bytes(n : Int64) : String
     case n

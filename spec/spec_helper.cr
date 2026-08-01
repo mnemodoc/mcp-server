@@ -45,6 +45,18 @@ ensure
   FileUtils.rm_rf(root) if root
 end
 
+# Removes a SQLite database and the two files WAL mode keeps beside it.
+#
+# The store opens in WAL, so every database is really three files: `x.db`,
+# `x.db-wal` and `x.db-shm`. Deleting only the first left the other two behind
+# on every example, and a full run of the suite deposited hundreds of them in
+# the system temp directory, never to be collected.
+def delete_db(path : String) : Nil
+  {path, "#{path}-wal", "#{path}-shm"}.each do |file|
+    File.delete(file) rescue nil
+  end
+end
+
 def with_env(values : Hash(String, String), &)
   old_values = {} of String => String?
   begin

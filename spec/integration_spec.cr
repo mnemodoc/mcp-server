@@ -86,7 +86,7 @@ Spectator.describe "end-to-end" do
     end
   ensure
     store.try(&.close)
-    File.delete(tmp_db) rescue nil if tmp_db
+    delete_db(tmp_db) if tmp_db
     FileUtils.rm_rf(tmp_dir) if tmp_dir
   end
 
@@ -247,7 +247,7 @@ Spectator.describe "end-to-end" do
         end
       ensure
         store.try(&.close)
-        File.delete(tmp_db) rescue nil
+        delete_db(tmp_db)
         FileUtils.rm_rf(tmp_dir)
       end
     end

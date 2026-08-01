@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default role. The files channel is not gated
 - `get_project_context` and `context --json` both report the selected role's
   rule `score`, telling a decisive match from a single weak keyword
+- `init` and `index` report their progress on stderr — a scan count, then a bar
+  and a percentage — degrading to one plain line per phase off a terminal, and
+  switched off under `--json` and `--quiet`
+- Both commands report the elapsed time, and carry `elapsed_ms` in their JSON
 
 ### Changed
 - `index` exits non-zero when chunks failed to embed and nothing was indexed;
@@ -52,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sections whose heading merely mentioned a table of contents were discarded
 - Code samples were read as headings in Markdown, Org and AsciiDoc
 - Deleting a file was not atomic across the index and its search tables
+- `ingest_path` reported `notifications/progress` as a count of files indexed
+  against a total of files to process, so progress stopped short of its total
+  whenever a file yielded no chunks; it now counts files processed
 
 ## [1.0.0] - 2026-06-17
 

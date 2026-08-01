@@ -16,11 +16,11 @@ Spectator.describe "init CLI command" do
   before_each { Dir.mkdir_p(root) }
   after_each { FileUtils.rm_rf(root) }
 
-  private def run_init(args : Array(String) = [] of String)
+  private def run_init(args : Array(String) = [] of String, env : Process::Env = nil)
     output = IO::Memory.new
     error = IO::Memory.new
     status = Process.run(binary, ["init"] + args,
-      chdir: root, output: output, error: error)
+      chdir: root, output: output, error: error, env: env)
     {code: status.exit_code, out: output.to_s, err: error.to_s}
   end
 
@@ -97,6 +97,67 @@ Spectator.describe "init CLI command" do
       result = run_init(["--quiet"])
       expect(result[:out]).to be_empty
       expect(result[:code]).to eq(0)
+    end
+  end
+
+  # Progress goes to stderr and only ever to stderr, so that stdout carries
+  # results and nothing else. It is also inhibited outright wherever it would
+  # be read by a program rather than a person.
+  describe "progress reporting" do
+    before_each do
+      Dir.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs", "a.md"), "# Title\n\n## Section\n\nSome text.\n")
+    end
+
+    it "names each phase without rewriting anything when stderr is not a terminal" do
+      result = run_init()
+
+      expect(result[:err]).to contain("Scanning files...")
+      expect(result[:err]).to contain("Indexing files...")
+      expect(result[:err]).not_to contain("\r")
+      expect(result[:err]).not_to contain("\e[")
+    end
+
+    it "keeps stdout a single parsable object under --json" do
+      result = run_init(["--json"])
+
+      expect { JSON.parse(result[:out]) }.not_to raise_error
+      expect(result[:err]).not_to contain("Scanning files")
+      expect(result[:err]).not_to contain("Indexing files")
+    end
+
+    it "stays silent on both streams under --quiet" do
+      result = run_init(["--quiet"])
+
+      expect(result[:out]).to be_empty
+      expect(result[:err]).not_to contain("Scanning files")
+      expect(result[:err]).not_to contain("Indexing files")
+    end
+
+    # Progress and the log share stderr, so only one of them may own it.
+    # Asking for debug is asking for the log, in full: reporting progress over
+    # it would bury what was just requested.
+    it "yields stderr to the log when the level was set to debug" do
+      result = run_init(env: {"MNEMODOC_SERVER_LOG_LEVEL" => "debug"})
+
+      expect(result[:err]).not_to contain("Scanning files")
+      expect(result[:err]).not_to contain("Indexing files")
+      expect(result[:err]).to contain("mnemodoc-server")
+    end
+
+    # A log sent anywhere else cannot collide with anything, so nothing is
+    # hushed and nothing is withheld.
+    # Asserted on the streams rather than on the log's contents: what lands in
+    # the file depends on whether Ollama is reachable, which it is not in CI.
+    # What must hold either way is that the two do not share a stream — the
+    # progress on stderr, every log entry in the file.
+    it "keeps both when the log goes to a file" do
+      log_path = File.join(root, "run.log")
+      result = run_init(env: {"MNEMODOC_SERVER_LOG_FILE" => log_path})
+
+      expect(result[:err]).to contain("Scanning files...")
+      expect(result[:err]).not_to contain("mnemodoc-server.indexer")
+      expect(File.exists?(log_path)).to be_true
     end
   end
 

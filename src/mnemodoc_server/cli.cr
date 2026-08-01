@@ -31,6 +31,70 @@ module MnemodocServer
     end
   end
 
+  # Mixin building the progress reporter for the commands that crawl.
+  #
+  # Progress is a courtesy to a human watching a long run, so it goes to
+  # stderr — stdout carries results and nothing else — and it is switched off
+  # entirely wherever the output is meant for a program: under --json and
+  # under --quiet.
+  #
+  # Off a terminal it is not suppressed but degraded: each phase is stated
+  # once, with no bar, no percentage and no control character, so a CI log
+  # still shows the run is alive without being filled with carriage returns.
+  #
+  # The TTY decision is taken here, once, and injected: the reporter itself
+  # never consults the process's streams, which is what makes it testable.
+  #
+  # Progress and the log may both be headed for stderr, and only one of them
+  # can own it — a bar that rewrites its line and an entry written over it
+  # leave neither readable. Three cases, in order:
+  #
+  # - the log goes somewhere else (a file, stdout): nothing can collide, so
+  #   both run untouched;
+  # - the log is at debug or trace on stderr: the detail was explicitly asked
+  #   for, so it keeps the stream and there is no bar at all;
+  # - otherwise: the bar owns the stream and info-level entries are held back
+  #   until it comes down, warnings and errors still passing through.
+  module CLIProgress
+    private def with_indexing_progress(json : Bool, quiet : Bool, &)
+      reporter = build_progress(json, quiet)
+      # Only a bar rewriting its own line can be trampled: off a terminal the
+      # rendering is plain, nothing collides, and the log stays whole.
+      MnemodocServer.hush_log! if reporter && STDERR.tty? && log_shares_stderr?
+      phases = Progress::Indexing.new(reporter)
+      begin
+        yield phases
+      ensure
+        # Closes whatever phase is still open, including on the way out of a
+        # failure: a half-drawn bar left above an error message would read as
+        # if the run were still going.
+        phases.finish
+        MnemodocServer.release_log!
+      end
+    end
+
+    private def build_progress(json : Bool, quiet : Bool) : Progress?
+      return nil if json || quiet
+      return nil if verbose_log_on_stderr?
+      Progress.new(STDERR, tty: STDERR.tty?)
+    end
+
+    private def log_shares_stderr? : Bool
+      MnemodocServer.config.server.log_file.downcase.in?("stderr", "")
+    end
+
+    # Deliberately not conditioned on a terminal: whoever asked for debug asked
+    # for the log, and the answer should not depend on where it is being read.
+    # It also keeps the rule reachable from a spec, which a TTY-only branch
+    # would not be.
+    private def verbose_log_on_stderr? : Bool
+      return false unless log_shares_stderr?
+      severity = ::Log::Severity.parse?(MnemodocServer.config.server.log_level)
+      return false unless severity
+      severity < ::Log::Severity::Info
+    end
+  end
+
   # Root Admiral command that registers all subcommands.
   # Prints the help text when invoked without a subcommand.
   class CLI < Admiral::Command
@@ -231,6 +295,7 @@ module MnemodocServer
     class Init < Admiral::Command
       include CLIErrorHandling
       include CLIOutput
+      include CLIProgress
       define_help description: "Initialise a MnemoDoc project in the current directory"
 
       # ameba:disable Lint/UselessAssign
@@ -252,7 +317,9 @@ module MnemodocServer
         MnemodocServer.init_app!(project[:config])
         config = MnemodocServer.config
         store = MnemodocServer.open_store(config)
+        started_at = Time.instant
         indexed = index_project(config, store)
+        elapsed = Time.instant - started_at
 
         payload = {
           project:        project[:project],
@@ -260,12 +327,13 @@ module MnemodocServer
           config_written: project[:config_written],
           paths:          project[:paths],
           files_indexed:  indexed,
+          elapsed_ms:     elapsed.total_milliseconds.round.to_i,
         }
         emit(payload, json: flags.json, quiet: flags.quiet) do
           puts "Initialised MnemoDoc project at #{project[:project]}"
           puts "  paths:   #{project[:paths].join(", ")}"
           puts "  config:  #{project[:config]}#{project[:config_written] ? "" : " (kept as it was)"}"
-          puts "  indexed: #{indexed} file(s)"
+          puts "  indexed: #{indexed} file(s) in #{MnemodocServer.format_duration(elapsed)}"
         end
       rescue ex : Indexer::EmbedderError
         handle_error(ex, json: flags.json)
@@ -282,7 +350,10 @@ module MnemodocServer
         qi = MnemodocServer.qdrant_index(config)
         qi.try { |index| MnemodocServer.ensure_qdrant!(index, store) }
         crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
-        result = crawler.run(store, embedder, SingleFlight.new, concurrency: config.index.concurrency)
+        result = with_indexing_progress(json: flags.json, quiet: flags.quiet) do |phases|
+          crawler.run(store, embedder, SingleFlight.new, concurrency: config.index.concurrency,
+            progress: phases.index, scan_progress: phases.scan)
+        end
         store.embedding_model = config.ollama.model
         embedder.close
         result[:indexed]
@@ -332,6 +403,7 @@ module MnemodocServer
     class Index < Admiral::Command
       include CLIErrorHandling
       include CLIOutput
+      include CLIProgress
       define_help description: "Index a file or directory"
 
       define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
@@ -369,18 +441,24 @@ module MnemodocServer
             json: flags.json)
         end
         qi.try { |index| MnemodocServer.ensure_qdrant!(index, store) }
-        index_result = crawler.run(store, embedder, sf, concurrency: config.index.concurrency)
+        started_at = Time.instant
+        index_result = with_indexing_progress(json: flags.json, quiet: flags.quiet) do |phases|
+          crawler.run(store, embedder, sf, concurrency: config.index.concurrency,
+            progress: phases.index, scan_progress: phases.scan)
+        end
+        elapsed = Time.instant - started_at
         store.embedding_model = config.ollama.model
         # Summary audit line, parity with the Serve background-indexing path.
         Log.info { "indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
         payload = {
-          indexed: index_result[:indexed],
-          skipped: index_result[:skipped],
-          pruned:  index_result[:pruned],
-          failed:  index_result[:failed],
+          indexed:    index_result[:indexed],
+          skipped:    index_result[:skipped],
+          pruned:     index_result[:pruned],
+          failed:     index_result[:failed],
+          elapsed_ms: elapsed.total_milliseconds.round.to_i,
         }
         emit(payload, json: flags.json, quiet: flags.quiet) do
-          puts "Indexed: #{index_result[:indexed]} files, skipped: #{index_result[:skipped]} (up to date), pruned: #{index_result[:pruned]}"
+          puts "Indexed: #{index_result[:indexed]} files, skipped: #{index_result[:skipped]} (up to date), pruned: #{index_result[:pruned]} — #{MnemodocServer.format_duration(elapsed)}"
           puts "Failed to embed: #{index_result[:failed]} chunk(s)" if index_result[:failed] > 0
         end
 

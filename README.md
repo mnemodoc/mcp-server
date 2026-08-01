@@ -306,6 +306,34 @@ Two commands exit non-zero on an outcome rather than on a crash. `daemon status`
 
 `daemon stop` probes the daemon's socket before signalling anything: if nothing answers, it removes the stale socket and pid file and reports that no daemon is running, rather than risking a `SIGTERM` to an unrelated process that inherited a dead daemon's pid. If the daemon does not exit within `--timeout` seconds the command says so and stops — it never escalates to `SIGKILL` against a process holding an open SQLite database.
 
+## Watching a long run
+
+`init` and `index` show what they are doing while they do it: first `Scanning
+files`, with a count that climbs — the total is precisely what the scan is
+finding — then `Indexing files`, with a bar, a percentage, and the elapsed time
+in the closing summary.
+
+```
+✓ Scanning files — done
+· Indexing files  ██████████░░░░░░░░░░░░░░░  40%
+```
+
+All of it goes to **stderr**. Stdout carries results and nothing else, so
+`mnemodoc-server index docs/ --json | jq` is unaffected, and progress is
+switched off outright under `--json` and `--quiet`.
+
+Redirect stderr to a file or a pipe and the display degrades rather than
+disappears: one plain line per phase, without a bar or a single control
+character, so a CI log records that the run happened without collecting
+carriage returns.
+
+Progress and the log share stderr, so only one of them may hold it. Raise the
+log to `debug` or `trace` and the log wins — the detail you asked for is not
+worth burying under a bar, so no bar is drawn. Send the log elsewhere
+(`server.log_file: /path/to.log`) and there is no contest: you get both, whole.
+Otherwise the bar holds the stream and info-level lines are held back until it
+comes down; warnings and errors are never held back.
+
 ## Finding the project
 
 The `.mnemodoc/` directory is what marks a directory as a MnemoDoc project —

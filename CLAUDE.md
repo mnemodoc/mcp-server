@@ -78,7 +78,8 @@ src/mnemodoc_server/
   config.cr                        YAML config + apply_env! + validate! (Ollama/Search/Server/Db/Index/Qdrant/Role/Context configs); daemon_socket_path / daemon_lock_path. `paths` has **no default** — an empty list is a validation error
   daemon.cr                        Per-project daemon: owns the SQLite index, spawns background indexing + a live file-watch (watch_and_index), serves MCP over a UNIX socket, self-exits when idle
   daemon_proxy.cr                  Default `serve --stdio` path when server.daemon is true: auto-spawns the daemon (flock-serialised), forwards JSON-RPC over the UNIX socket, self-heals on daemon death (≤3 attempts), falls back to in-process standalone on exhaustion
-  helpers.cr                       version (shard version + git ref, compile-time), format_bytes
+  helpers.cr                       version (shard version + git ref, compile-time), format_bytes, format_duration
+  progress.cr                      Terminal progress rendering (IO + tty injected) + Progress::Indexing, the crawler's two phases
   systemd.cr                       systemd sd_notify (READY=1, STOPPING=1, watchdog)
   single_flight.cr                 Concurrent deduplication via Channel + Mutex
   connection_pool.cr               Per-host HTTP connection pool (for Ollama calls)
@@ -234,6 +235,35 @@ injecting; below it stdout stays **empty**, rather than falling back to the
 default role, because this runs before every user message. The files channel is
 never gated — an edited file is a strong, unambiguous signal — and neither is
 the `get_project_context` tool, which the agent calls deliberately.
+
+### Indexing progress
+
+`init` and `index` report two phases while they crawl — `Scanning files`, which
+reports a running count because the total is what it is busy discovering, then
+`Indexing files`, with a bar and a percentage. Both go to **stderr**, never to
+stdout, which carries results alone. Off a terminal the rendering degrades to
+one plain line per phase: no bar, no percentage, no control character, so a CI
+log shows the run is alive without filling with carriage returns.
+
+`Progress` takes its IO **and** its tty flag as arguments and never consults the
+process's streams — that decision belongs to `CLIProgress`, once, and injecting
+it is what makes the rendering testable without a terminal. Colours are written
+by hand for the same reason: `Colorize.enabled?` is a process-wide flag derived
+from STDOUT/STDERR.
+
+The crawler knows nothing of phases: it reports a count while scanning and a
+fraction while indexing, and never says the scan ended. The first indexing
+callback **is** that signal, and `Progress::Indexing` is where it turns into a
+phase switch — keeping any notion of display out of the crawler.
+
+Progress and the log may both be headed for stderr, and only one can own it.
+Three cases: the log goes elsewhere (a file, stdout) and nothing collides, so
+both run untouched; the log is at debug or trace, so the detail that was
+explicitly asked for keeps the stream and there is no bar at all; otherwise the
+bar owns it and info-level entries are held back by `hush_log!` until
+`release_log!`, warnings and errors still passing through. The debug rule is
+deliberately **not** conditioned on a terminal — a TTY-only branch would be
+unreachable from a spec.
 
 ### The prompt hook
 

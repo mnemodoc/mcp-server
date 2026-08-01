@@ -172,6 +172,8 @@ Spectator.describe "context CLI command" do
       File.write(File.join(tmp_dir, "generalist.md"), "# Generalist role\nDefault conventions.")
       File.write(File.join(tmp_dir, "policies.md"), "# Policies role\nScope ownership.")
       File.write(config_path, <<-YAML)
+      paths:
+        - .
       server:
         log_file: #{log_path}
       context:
