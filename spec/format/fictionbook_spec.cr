@@ -20,13 +20,13 @@ Spectator.describe MnemodocServer::Indexer::Format::FictionBook do
       </body>
     </FictionBook>
     XML
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Chapter", "Scene"])
     expect(chunks.map(&.parent_heading)).to eq([nil, "Chapter"])
     expect(chunks.first.content).to contain("opening line")
   end
 
   it "returns an empty array when the file is unreadable" do
-    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.fb2", mtime: 1_i64)).to be_empty
+    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.fb2", mtime: 1_i64).chunks).to be_empty
   end
 end

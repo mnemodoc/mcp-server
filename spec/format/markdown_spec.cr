@@ -7,9 +7,35 @@ Spectator.describe MnemodocServer::Indexer::Format::Markdown do
   let(tmp) { "/tmp/mnemodoc-md-#{Random::Secure.hex(4)}.md" }
   after_each { File.delete(tmp) rescue nil }
 
-  private def chunks_for(content : String)
+  private def document_for(content : String)
     File.write(tmp, content)
     handler.extract(tmp, mtime: 1000_i64)
+  end
+
+  private def chunks_for(content : String)
+    document_for(content).chunks
+  end
+
+  it "returns the file verbatim, frontmatter included" do
+    document = document_for("---\ntitle: My Doc\n---\n\n## Section\n\nReal content.")
+    expect(document.verbatim?).to be_true
+    expect(document.text).to contain("title: My Doc")
+    expect(document.line_count).to eq(7)
+  end
+
+  # The parser is handed content already stripped of its frontmatter, while the
+  # stored text is the whole file. Without adding the dropped lines back, every
+  # heading in a file with frontmatter is off by exactly that many lines — an
+  # error that passes every functional test and only shows up in use.
+  it "numbers headings against the whole file, not the stripped content" do
+    document = document_for("---\ntitle: My Doc\n---\n\n## Section\n\nReal content.")
+    expect(document.outline.map(&.title)).to eq(["## Section"])
+    expect(document.outline.first.start_line).to eq(5)
+  end
+
+  it "numbers headings from line 1 when there is no frontmatter" do
+    document = document_for("## Section\n\nReal content.")
+    expect(document.outline.first.start_line).to eq(1)
   end
 
   it "returns one chunk for a file with no headings" do
@@ -95,12 +121,12 @@ Spectator.describe MnemodocServer::Indexer::Format::Markdown do
 
   it "indexes .mdx through the same path" do
     File.write(tmp, "## H\n\n<Component/> text")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.first.content).to contain("text")
   end
 
   it "returns empty array when the file is unreadable" do
-    expect(handler.extract("/tmp/does-not-exist-#{Random::Secure.hex(4)}.md", mtime: 1_i64)).to be_empty
+    expect(handler.extract("/tmp/does-not-exist-#{Random::Secure.hex(4)}.md", mtime: 1_i64).chunks).to be_empty
   end
 
   # End-to-end strip through the Markdown handler: a pure breadcrumb is dropped
@@ -120,7 +146,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Markdown do
       See [the API reference](api.md) for details on authentication.
       MD
       File.write(tmp, content)
-      chunks = stripping.extract(tmp, mtime: 1_i64)
+      chunks = stripping.extract(tmp, mtime: 1_i64).chunks
       body = chunks.join(" ", &.content)
       expect(body).not_to contain("Index")
       expect(body).not_to contain("Map")

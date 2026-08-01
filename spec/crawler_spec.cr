@@ -73,6 +73,34 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
     end
   end
 
+  describe "stored documents" do
+    it "stores the document text and outline for every file it indexes" do
+      embedding = Array(Float32).new(768, 0.1_f32)
+      fake_ollama(embedding) do |port|
+        write_file("guide.md", "# Guide\n\n## Setup\n\nRun the thing.\n")
+        db_path = "/tmp/mnemodoc-crawler-doc-#{Random::Secure.hex(4)}.db"
+        store = MnemodocServer::Store::SQLite.new(db_path)
+        cfg = MnemodocServer::OllamaConfig.from_yaml("host: http://127.0.0.1:#{port}")
+        embedder = MnemodocServer::Indexer::Embedder.new(cfg)
+        crawler = MnemodocServer::Indexer::Crawler.new([tmp_dir], default_registry)
+
+        crawler.run(store, embedder, MnemodocServer::SingleFlight.new, concurrency: 1)
+
+        path = File.join(tmp_dir, "guide.md")
+        document = store.document_for(path)
+        expect(document).not_to be_nil
+        expect(document.try(&.[:verbatim])).to be_true
+        expect(document.try(&.[:text])).to contain("Run the thing.")
+        expect(store.outline_for(path).map(&.title)).to eq(["# Guide", "## Setup"])
+        expect(store.outline_for(path).map(&.start_line)).to eq([1, 3])
+
+        store.close
+        delete_db(db_path)
+        embedder.close
+      end
+    end
+  end
+
   describe "qdrant sync" do
     it "upserts indexed files and deletes pruned files' points" do
       embedding = Array(Float32).new(768, 0.1_f32)

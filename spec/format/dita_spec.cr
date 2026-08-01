@@ -18,13 +18,13 @@ Spectator.describe MnemodocServer::Indexer::Format::Dita do
       </body>
     </topic>
     XML
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Install", "Options"])
     expect(chunks.first.content).to contain("run the installer")
     expect(chunks.last.parent_heading).to eq("Install")
   end
 
   it "returns an empty array when the file is unreadable" do
-    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.dita", mtime: 1_i64)).to be_empty
+    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.dita", mtime: 1_i64).chunks).to be_empty
   end
 end

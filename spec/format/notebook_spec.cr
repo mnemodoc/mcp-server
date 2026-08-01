@@ -16,7 +16,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Notebook do
       ],
     }.to_json
     File.write(tmp, nb)
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     setup = chunks.find! { |chunk| chunk.heading == "## Setup" }
     expect(setup.content).to contain("explain")
     expect(setup.content).to contain("import os")
@@ -24,6 +24,6 @@ Spectator.describe MnemodocServer::Indexer::Format::Notebook do
 
   it "returns empty array on invalid JSON" do
     File.write(tmp, "{ not json")
-    expect(handler.extract(tmp, mtime: 1_i64)).to be_empty
+    expect(handler.extract(tmp, mtime: 1_i64).chunks).to be_empty
   end
 end

@@ -10,15 +10,22 @@ module MnemodocServer
         def initialize(@assembler : ChunkAssembler, @odt : Odt)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
-          sections = @odt.sections_from_document(XML.parse(read_text(path)))
-          @assembler.assemble(path, sections, "", mtime)
+        def extract(path : String, mtime : Int64) : Document
+          sz = @odt.sectionize_document(XML.parse(read_text(path)))
+          # verbatim is false: the file is XML markup, and the document is the
+          # prose the walk pulled out of it.
+          Document.new(
+            text: sz.normalized_text,
+            verbatim: false,
+            outline: sz.outline,
+            chunks: @assembler.assemble(path, sz.sections, sz.normalized_text, mtime),
+          )
         rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         rescue ex
           Log.warn { "flat-odf parse failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         end
       end
     end

@@ -23,6 +23,7 @@ require "./mnemodoc_server/project"
 require "./mnemodoc_server/install/claude_code"
 require "./mnemodoc_server/licenses"
 require "./mnemodoc_server/chunk"
+require "./mnemodoc_server/indexer/document"
 require "./mnemodoc_server/indexer/section"
 require "./mnemodoc_server/indexer/sectionizer"
 require "./mnemodoc_server/indexer/chunk_assembler"
@@ -58,6 +59,9 @@ require "./mnemodoc_server/search/semantic"
 require "./mnemodoc_server/search/keyword"
 require "./mnemodoc_server/search/hybrid"
 require "./mnemodoc_server/search/hook_selection"
+require "./mnemodoc_server/tools/document_access"
+require "./mnemodoc_server/tools/read"
+require "./mnemodoc_server/tools/outline"
 require "./mnemodoc_server/tools/query"
 require "./mnemodoc_server/tools/ingest"
 require "./mnemodoc_server/tools/list"
@@ -253,10 +257,69 @@ module MnemodocServer
   # logs a one-line summary. Does NOT spawn — the caller decides whether to run
   # this in the background. A failing index is logged and swallowed so it never
   # takes the server down.
+  # Rebuilds the stored text and outline for files indexed before documents
+  # were stored. Returns how many files were rebuilt.
+  #
+  # Deliberately embedding-free: the chunks and their vectors are already in the
+  # index and still correct, so this is a read and a parse per file and must
+  # never reach the embedder. A backfill that needed Ollama would make every
+  # document unreadable whenever Ollama is down, for a rebuild that has nothing
+  # to do with embeddings.
+  #
+  # It writes through index_file with the file's recorded mtime, so the file's
+  # freshness bookkeeping is unchanged and a later crawl still skips it.
+  def self.backfill_documents!(config : Config, store : Store::SQLite,
+                               registry : Indexer::Format::Registry) : Int32
+    missing = store.files_missing_documents
+    return 0 if missing.empty?
+
+    rebuilt = 0
+    missing.each do |file|
+      begin
+        next unless File.file?(file[:path])
+        handler = registry.for(file[:path], explicit: true)
+        next if handler.nil?
+        document = handler.extract(file[:path], file[:mtime])
+        next if document.text.empty?
+        store.index_file(
+          file[:path], file[:mtime], rehydrated_chunks(store, file[:path]),
+          text: document.text, verbatim: document.verbatim?, outline: document.outline,
+        )
+        rebuilt += 1
+      rescue ex
+        Log.warn { "document backfill failed for #{file[:path]}: #{ex.message}" }
+      end
+    end
+    Log.info { "document backfill: #{rebuilt} of #{missing.size} files rebuilt" } if rebuilt > 0
+    rebuilt
+  end
+
+  # A file's stored chunks with their vectors put back.
+  #
+  # chunks_for_files deliberately leaves the embedding empty — the vectors live
+  # in vec0 and no read path needs them. Rewriting those chunks through
+  # index_file as they come would therefore erase every vector of the file, and
+  # search would go on answering with nothing but its keyword signal behind it.
+  private def self.rehydrated_chunks(store : Store::SQLite, path : String) : Array(Chunk)
+    vectors = store.embeddings_for_file(path).to_h { |row| {row[:id], row[:vector]} }
+    store.chunks_for_files([path]).map do |chunk|
+      Chunk.new(
+        file_path: chunk.file_path, heading: chunk.heading,
+        parent_heading: chunk.parent_heading, content: chunk.content,
+        embedding: chunk.id.try { |id| vectors[id]? } || [] of Float32,
+        token_count: chunk.token_count, mtime: chunk.mtime,
+      )
+    end
+  end
+
   def self.background_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?,
                             sf : SingleFlight = SingleFlight.new) : Nil
     idx_embedder = Indexer::Embedder.new(config.ollama, idle_connections: config.index.concurrency)
     registry = Indexer::Format::Registry.new(config)
+    # Before the crawl: an index predating stored documents would otherwise
+    # never be revisited, since indexing is driven by mtime and those files have
+    # not changed.
+    backfill_documents!(config, store, registry)
     crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
     if store.model_mismatch?(config.ollama.model)
       Log.warn { "embedding model changed; clearing index for a full re-index" }

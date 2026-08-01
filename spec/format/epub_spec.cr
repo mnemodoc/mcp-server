@@ -17,14 +17,14 @@ Spectator.describe MnemodocServer::Indexer::Format::Epub do
         zip.add("META-INF/container.xml", "<container/>")
       end
     end
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Chapter One", "Chapter Two"])
     expect(chunks.first.content).to contain("alpha")
   end
 
   it "returns an empty array for a corrupt (non-zip) file" do
     File.write(tmp, "not a zip")
-    expect(handler.extract(tmp, mtime: 1_i64)).to be_empty
+    expect(handler.extract(tmp, mtime: 1_i64).chunks).to be_empty
   end
 
   # Alphabetical order is not reading order: ch10 sorts before ch2. The book's
@@ -54,7 +54,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Epub do
       end
     end
 
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Deux", "Dix"])
   end
 end

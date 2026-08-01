@@ -13,18 +13,21 @@ module MnemodocServer
         def initialize(@assembler : ChunkAssembler, @html : Html)
         end
 
-        def parse(zip : Compress::Zip::File) : Array(Section)
-          sections = [] of Section
+        def parse(zip : Compress::Zip::File) : Sectionizer
+          book = Sectionizer.new
           chapter_names(zip).each do |name|
             content = read_entry(zip, name)
             next unless content
             begin
-              sections.concat(@html.parse_sections(content))
+              # Absorbed rather than concatenated: each chapter is parsed on its
+              # own sectionizer, so its outline is numbered from 1, and only the
+              # book knows how many lines came before it.
+              book.absorb(@html.sectionize(content))
             rescue ex
               Log.warn { "skipping epub chapter #{name}: #{ex.message}" }
             end
           end
-          sections
+          book
         end
 
         # Chapter entry names in reading order.

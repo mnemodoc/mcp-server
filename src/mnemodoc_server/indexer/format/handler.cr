@@ -1,10 +1,18 @@
 module MnemodocServer
   module Indexer
     module Format
-      # A format strategy: owns reading a file AND parsing it into Chunks.
-      # The crawler dispatches to a Handler via the Registry and knows nothing
-      # about the underlying format. Implementations MUST NOT raise on content
-      # or IO errors: log a warning and return an empty array instead.
+      # A format strategy: owns reading a file AND parsing it into a Document —
+      # its text, whether that text is the file verbatim, its heading outline,
+      # and the Chunks to embed. The crawler dispatches to a Handler via the
+      # Registry and knows nothing about the underlying format. Implementations
+      # MUST NOT raise on content or IO errors: log a warning and return
+      # Document.empty instead.
+      #
+      # The invariant every implementation owes its callers: an OutlineEntry's
+      # start_line indexes the Document's own text, never the file on disk. A
+      # handler reading a text file passes the true source line and declares
+      # verbatim; one building its text by extraction lets the Sectionizer
+      # number what it emits and declares verbatim false. Never a mix of the two.
       # Raised when a document exceeds index.max_file_size. Handlers turn it
       # into an empty result, like any other unreadable input.
       class DocumentTooLarge < Exception
@@ -25,7 +33,7 @@ module MnemodocServer
 
         property max_bytes : Int64 = DEFAULT_MAX_BYTES
 
-        abstract def extract(path : String, mtime : Int64) : Array(Chunk)
+        abstract def extract(path : String, mtime : Int64) : Document
 
         # True when the file is larger than we are willing to hold in memory.
         # Handlers read whole documents, so without this a stray dump in an

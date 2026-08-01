@@ -12,20 +12,39 @@ module MnemodocServer
         def initialize(@assembler : ChunkAssembler)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
-          content = strip_frontmatter(read_text(path))
-          @assembler.assemble(path, parse_sections(content), content, mtime)
+        def extract(path : String, mtime : Int64) : Document
+          raw = read_text(path)
+          stripped = strip_frontmatter(raw)
+          sz = sectionize(stripped[:content], line_offset: stripped[:dropped])
+          Document.new(
+            text: raw,
+            verbatim: true,
+            outline: sz.outline,
+            chunks: @assembler.assemble(path, sz.sections, stripped[:content], mtime),
+          )
         rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         end
 
         # Parses Markdown text into Sections. Public so Format::Notebook can
         # reuse Markdown heading semantics for notebook markdown cells.
         def parse_sections(content : String) : Array(Section)
+          sectionize(content, line_offset: 0).sections
+        end
+
+        # Runs the line scan and hands back the sectionizer itself, so a caller
+        # needing the outline gets it from the same pass that built the
+        # sections rather than from a second scan that could diverge from it.
+        #
+        # line_offset is the number of lines removed before this content began,
+        # so a heading still reports its line in the whole file.
+        def sectionize(content : String, line_offset : Int32) : Sectionizer
           sz = Sectionizer.new
           fence = FenceTracker.markdown
+          line_no = line_offset
           content.each_line do |line|
+            line_no += 1
             stripped = line.strip
             # A delimiter, and everything it encloses, is text whatever it looks
             # like: the markers that open a heading are ordinary characters in a
@@ -38,27 +57,29 @@ module MnemodocServer
             # Excluding it dropped the document title into the preamble, which
             # produced a chunk whose whole content was that title line.
             if match = stripped.match(/^(###|##|#)\s+.+/)
-              sz.heading(match[1].size, stripped)
+              sz.heading(match[1].size, stripped, source_line: line_no)
             else
               sz.text(line.chomp)
             end
           end
-          sz.sections
+          sz
         end
 
-        # Drops a leading YAML frontmatter block delimited by `---` lines.
+        # Drops a leading YAML frontmatter block delimited by `---` lines, and
+        # reports how many lines it removed so headings can still be numbered
+        # against the whole file rather than against the remainder.
         #
         # The rejoin has to name its separator: `String#lines` chomps, so
         # joining the remainder without one welds the whole document into a
         # single line — headings stop being headings and words from adjacent
         # lines run together, silently, for every file carrying frontmatter.
-        private def strip_frontmatter(content : String) : String
+        private def strip_frontmatter(content : String) : {content: String, dropped: Int32}
           lines = content.lines
-          return content unless lines.first?.try(&.strip) == "---"
+          return {content: content, dropped: 0} unless lines.first?.try(&.strip) == "---"
           end_idx = lines.index(1) { |line| line.strip == "---" }
-          return content unless end_idx
-          return content unless frontmatter?(lines[1...end_idx].join("\n"))
-          lines[(end_idx + 1)..].join("\n")
+          return {content: content, dropped: 0} unless end_idx
+          return {content: content, dropped: 0} unless frontmatter?(lines[1...end_idx].join("\n"))
+          {content: lines[(end_idx + 1)..].join("\n"), dropped: end_idx + 1}
         end
 
         # Tells a frontmatter block from the prose between two horizontal rules.

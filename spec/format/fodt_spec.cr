@@ -18,12 +18,12 @@ Spectator.describe MnemodocServer::Indexer::Format::Fodt do
       </office:text></office:body>
     </office>
     XML
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Top", "Sub"])
     expect(chunks.map(&.parent_heading)).to eq([nil, "Top"])
   end
 
   it "returns an empty array when the file is unreadable" do
-    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.fodt", mtime: 1_i64)).to be_empty
+    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.fodt", mtime: 1_i64).chunks).to be_empty
   end
 end

@@ -13,15 +13,24 @@ module MnemodocServer
         def initialize(@markdown : Markdown, @assembler : ChunkAssembler)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
+        def extract(path : String, mtime : Int64) : Document
           document = build_markdown(read_text(path))
-          @assembler.assemble(path, @markdown.parse_sections(document), document, mtime)
+          sz = @markdown.sectionize(document, line_offset: 0)
+          # verbatim is false: the file is JSON, and the document indexed is the
+          # pseudo-Markdown synthesised below. Numbering the source JSON would
+          # address something nobody reads.
+          Document.new(
+            text: document,
+            verbatim: false,
+            outline: sz.outline,
+            chunks: @assembler.assemble(path, sz.sections, document, mtime),
+          )
         rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         rescue ex : JSON::ParseException
           Log.warn { "invalid notebook json for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         end
 
         # Converts notebook cells into one Markdown string.

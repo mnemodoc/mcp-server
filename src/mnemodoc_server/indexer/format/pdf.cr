@@ -19,10 +19,17 @@ module MnemodocServer
                        @timeout : Time::Span = DEFAULT_TIMEOUT)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
+        def extract(path : String, mtime : Int64) : Document
           text = run_pdftotext(path)
-          return [] of Chunk if text.nil?
-          @assembler.assemble(path, [] of Section, text, mtime)
+          return Document.empty if text.nil?
+          # verbatim is false: the text is what pdftotext produced, and a PDF
+          # has no source lines of its own to number against.
+          Document.new(
+            text: text,
+            verbatim: false,
+            outline: [] of OutlineEntry,
+            chunks: @assembler.assemble(path, [] of Section, text, mtime),
+          )
         end
 
         # Runs `<command> <path> -` and returns stdout, or nil on any failure.

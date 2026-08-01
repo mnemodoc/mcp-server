@@ -1,5 +1,5 @@
 module MnemodocServer
-  # Builds an MCP::Server populated with mnemodoc's six tools, all sharing one
+  # Builds an MCP::Server populated with mnemodoc's eight tools, all sharing one
   # Embedder (so the HTTP connection pool is reused across query and ingest).
   # The shared embedder is returned alongside so the caller can drain it on shutdown.
   #
@@ -20,6 +20,8 @@ module MnemodocServer
       list = Tools::List.new(store)
       delete = Tools::Delete.new(store)
       status = Tools::Status.new(config, store)
+      read = Tools::Read.new(store)
+      outline = Tools::Outline.new(store)
 
       context = Tools::Context.new(Roles::Selector.from_config(config, embedder))
 
@@ -54,6 +56,30 @@ module MnemodocServer
           type:       "object",
           properties: {prefix: {type: "string", description: "Filter by path prefix"}},
         }) { |args, progress| guarded { list.call(args, progress) } }
+
+      server.tool("outline_document",
+        description: "Get an indexed document's plan: every heading with its level, the line it starts on and how many lines it runs. Call it when you know which document holds the answer but not where in it, before reading anything — the plan costs a fraction of the document. Then call read_document on the section you want.",
+        annotations: MCP::ToolAnnotations.new(read_only_hint: true),
+        schema: {
+          type:       "object",
+          properties: {
+            path: {type: "string", description: "Path of an indexed file (exact, relative, or a unique suffix)"},
+          },
+          required: ["path"],
+        }) { |args, progress| guarded { outline.call(args, progress) } }
+
+      server.tool("read_document",
+        description: "Read a numbered window of an indexed document, straight from the index. Call it when a passage query_documents returned is cut short and you need what surrounds it, or to read a section outline_document located — rather than opening the file with a generic file tool. Line numbers are the file's own when `verbatim` is true; for extracted formats (.docx, .pdf, .ipynb, HTML) they number MnemoDoc's own extraction, so do not quote them outside this conversation.",
+        annotations: MCP::ToolAnnotations.new(read_only_hint: true),
+        schema: {
+          type:       "object",
+          properties: {
+            path:   {type: "string", description: "Path of an indexed file (exact, relative, or a unique suffix)"},
+            offset: {type: "integer", description: "1-based first line to return (default: 1)"},
+            limit:  {type: "integer", description: "Maximum lines to return (default: 200, max: 2000)"},
+          },
+          required: ["path"],
+        }) { |args, progress| guarded { read.call(args, progress) } }
 
       server.tool("delete_file",
         description: "Remove a document and all its passages from the index. Call it when a file has been deleted or moved and stale passages still surface in search results. It only touches the index — the file on disk is left alone.",

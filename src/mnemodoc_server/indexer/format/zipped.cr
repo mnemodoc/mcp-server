@@ -12,22 +12,30 @@ module MnemodocServer
         def initialize(@assembler : ChunkAssembler)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
-          return [] of Chunk if too_large?(path)
-          sections = Compress::Zip::File.open(path) { |zip| parse(zip) }
-          @assembler.assemble(path, sections, "", mtime)
+        def extract(path : String, mtime : Int64) : Document
+          return Document.empty if too_large?(path)
+          sz = Compress::Zip::File.open(path) { |zip| parse(zip) }
+          # verbatim is false for every archive format: the file on disk is a
+          # ZIP, so the only text there is to number is the one extracted here.
+          Document.new(
+            text: sz.normalized_text,
+            verbatim: false,
+            outline: sz.outline,
+            chunks: @assembler.assemble(path, sz.sections, sz.normalized_text, mtime),
+          )
         rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         rescue ex
           Log.warn { "zip/xml parse failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         end
 
-        # Builds normalized Sections from the open archive. Implementations read
-        # the relevant entries and walk their XML; they may assume the archive is
-        # open and need not rescue (the base turns any error into an empty result).
-        abstract def parse(zip : Compress::Zip::File) : Array(Section)
+        # Builds a Sectionizer from the open archive — sections, outline and the
+        # extracted text in one pass. Implementations read the relevant entries
+        # and walk their XML; they may assume the archive is open and need not
+        # rescue (the base turns any error into an empty result).
+        abstract def parse(zip : Compress::Zip::File) : Sectionizer
 
         # Reads one archive entry as a string, or nil if absent.
         #

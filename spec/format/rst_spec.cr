@@ -6,6 +6,20 @@ Spectator.describe MnemodocServer::Indexer::Format::Rst do
   let(tmp) { "/tmp/mnemodoc-rst-#{Random::Secure.hex(4)}.rst" }
   after_each { File.delete(tmp) rescue nil }
 
+  # A title spans two or three lines. start_line designates the title text
+  # line, not its adornment — otherwise a framed title reports the rule above
+  # it, which is not where the section begins.
+  it "starts an underlined title on its text line" do
+    document = handler.extract(tmp_write("intro\n\nTitle\n=====\n\nbody\n"), mtime: 1_i64)
+    expect(document.outline.map(&.title)).to eq(["Title"])
+    expect(document.outline.first.start_line).to eq(3)
+  end
+
+  it "starts a framed title on its text line, not on the overline" do
+    document = handler.extract(tmp_write("=====\nTitle\n=====\n\nbody\n"), mtime: 1_i64)
+    expect(document.outline.first.start_line).to eq(2)
+  end
+
   it "assigns levels by order of first appearance of the underline character" do
     content = <<-RST
     Top Title
@@ -23,7 +37,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Rst do
 
     body b
     RST
-    chunks = handler.extract(tmp_write(content), mtime: 1_i64)
+    chunks = handler.extract(tmp_write(content), mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Top Title", "First Section", "Second Section"])
     # `=` seen first => level 1 (parent nil); `-` second => level 2 (parent = Top Title)
     expect(chunks.map(&.parent_heading)).to eq([nil, "Top Title", "Top Title"])
@@ -47,7 +61,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Rst do
       See `the configuration guide <config.html>`_ for full details on all options.
       RST
       File.write(tmp, content)
-      chunks = stripping.extract(tmp, mtime: 1_i64)
+      chunks = stripping.extract(tmp, mtime: 1_i64).chunks
       body = chunks.join(" ", &.content)
       expect(body).not_to contain("Home")
       expect(body).to contain("for full details on all options")
@@ -64,7 +78,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Rst do
   # and ended up inside the preceding chunk.
   it "recognises a title framed above and below" do
     File.write(tmp, "======\nTitre\n======\n\nCorps du texte.\n")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Titre"])
     expect(chunks.first.content).to eq("Corps du texte.")
   end

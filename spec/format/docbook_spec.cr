@@ -20,7 +20,7 @@ Spectator.describe MnemodocServer::Indexer::Format::DocBook do
       </chapter>
     </book>
     XML
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Guide", "Chapter One", "Details"])
     expect(chunks.last.parent_heading).to eq("Chapter One")
     expect(chunks.any?(&.content.includes?("nested body"))).to be_true
@@ -33,12 +33,12 @@ Spectator.describe MnemodocServer::Indexer::Format::DocBook do
       <para>install steps</para>
     </chapter>
     XML
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Setup"])
     expect(chunks.first.content).to contain("install steps")
   end
 
   it "returns an empty array when the file is unreadable" do
-    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.dbk", mtime: 1_i64)).to be_empty
+    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.dbk", mtime: 1_i64).chunks).to be_empty
   end
 end

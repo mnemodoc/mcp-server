@@ -228,6 +228,8 @@ mnemodoc-server serve [--config <file>]                                    # Cla
 mnemodoc-server serve --sse [--port 8765] [--host 127.0.0.1]             # Cursor / other clients
 mnemodoc-server index <path>                                               # Index a file or directory
 mnemodoc-server search "<query>" [--mode hybrid|semantic|keyword] [--top 5] # Test search from terminal
+mnemodoc-server outline <path>                                             # A document's heading plan
+mnemodoc-server read <path> [--offset 1] [--limit 200]                     # Numbered lines, served from the index
 mnemodoc-server status                                                     # Index stats
 mnemodoc-server delete <path>                                              # Remove from index
 mnemodoc-server context [--files <path>]... [--task <kind>] [--query "<text>"] # Resolve & print the role to adopt
@@ -285,7 +287,7 @@ tuned only on real questions never sees.
 
 ### Machine-readable output
 
-Every subcommand that returns a result accepts `--json` — `index`, `search`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not: one streams a protocol, the other writes a passage for a client hook to consume verbatim., emitting its result as a single JSON object on stdout:
+Every subcommand that returns a result accepts `--json` — `index`, `search`, `outline`, `read`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not: one streams a protocol, the other writes a passage for a client hook to consume verbatim., emitting its result as a single JSON object on stdout:
 
 ```sh
 $ mnemodoc-server status --json
@@ -361,6 +363,8 @@ project root.
 |---|---|---|---|
 | `query_documents` | `query` (string) | `top_k` (int), `mode` (hybrid\|semantic\|keyword) | chunks with file, heading, parent_heading, content, score; total_candidates, query_time_ms, mode |
 | `ingest_path` | `path` (string) | — | indexed, skipped, pruned, failed counts |
+| `outline_document` | `path` (string) | — | `sections` with level, title, start_line, end_line, lines; line_count, verbatim, stale |
+| `read_document` | `path` (string) | `offset` (int, 1-based), `limit` (int, max 2000) | numbered `content`, offset, limit, returned, line_count, verbatim, stale, eof |
 | `list_files` | — | — | list of indexed files with metadata |
 | `delete_file` | `path` (string) | — | confirmation |
 | `status` | — | — | version, chunk_count, file_count, model, search_mode, db_path |
@@ -369,6 +373,24 @@ project root.
 `query_documents` optional args override the config values for that request only.
 
 `get_project_context` is the in-session, on-demand half of the contextual-role system — see [Contextual roles & the PreToolUse hook](#contextual-roles--the-pretooluse-hook).
+
+### Reading a document instead of re-opening it
+
+`outline_document` and `read_document` fill the gap between the scattered
+passages `query_documents` returns and a full re-read of the file. Ask for the
+plan, then read the section you want: a plan costs a fraction of the document.
+
+Both serve the copy stored at index time, not the file on disk. That copy is
+what the returned passages were built from, so widening around one of them can
+never land on a different revision — and it is why a file edited since indexing
+comes back with `stale: true` and a warning rather than fresh content.
+
+**`verbatim` says whose line numbers you are reading.** For Markdown, Org,
+AsciiDoc, reStructuredText and plain text it is `true`: the stored text is the
+file, so line 62 is line 62 in your editor. For every extracted format — Office
+and OpenDocument, EPUB, PDF, Jupyter notebooks, HTML — it is `false`: those
+files have no source lines to point at, so the numbers are MnemoDoc's own and
+mean nothing outside a reply that carries them.
 
 ## Behaviour notes
 

@@ -14,12 +14,18 @@ module MnemodocServer
         def initialize(@assembler : ChunkAssembler)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
+        def extract(path : String, mtime : Int64) : Document
           content = read_text(path)
-          @assembler.assemble(path, parse_sections(content), content, mtime)
+          sz = sectionize(content)
+          Document.new(
+            text: content,
+            verbatim: true,
+            outline: sz.outline,
+            chunks: @assembler.assemble(path, sz.sections, content, mtime),
+          )
         rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         end
 
         # A title may be FRAMED: an adornment line above it as well as below.
@@ -37,7 +43,7 @@ module MnemodocServer
           {title: title, adornment: adornment}
         end
 
-        private def parse_sections(content : String) : Array(Section)
+        private def sectionize(content : String) : Sectionizer
           sz = Sectionizer.new
           levels = {} of Char => Int32
           lines = content.split('\n')
@@ -49,21 +55,24 @@ module MnemodocServer
 
             if framed = framed_title(lines, i)
               level = (levels[framed[:adornment]] ||= levels.size + 1)
-              sz.heading(level, framed[:title])
+              # i is 0-based and a framed title sits one line below its overline,
+              # so the section starts at i + 2. Reporting the overline instead
+              # would point one line above where the section actually begins.
+              sz.heading(level, framed[:title], source_line: i + 2)
               i += 3
               next
             end
 
             if adornment && !title.strip.empty? && underline.rstrip.size >= title.strip.size
               level = (levels[adornment] ||= levels.size + 1)
-              sz.heading(level, title.strip)
+              sz.heading(level, title.strip, source_line: i + 1)
               i += 2
             else
               sz.text(title)
               i += 1
             end
           end
-          sz.sections
+          sz
         end
 
         # Returns the adornment character if the line is a non-empty run of a

@@ -196,17 +196,20 @@ module MnemodocServer
             Log.debug { "no handler for #{file[:path]}, skipping" }
             next
           end
-          raw_chunks = handler.extract(file[:path], file[:mtime])
-          if raw_chunks.empty?
+          document = handler.extract(file[:path], file[:mtime])
+          if document.chunks.empty?
             Log.debug { "no chunks for #{file[:path]}, skipping" }
             next
           end
-          embed_result = embedder.embed_chunks_resilient(raw_chunks)
+          embed_result = embedder.embed_chunks_resilient(document.chunks)
           if embed_result[:embedded].empty?
-            Log.warn { "all #{raw_chunks.size} chunks failed to embed for #{file[:path]}, skipping" }
+            Log.warn { "all #{document.chunks.size} chunks failed to embed for #{file[:path]}, skipping" }
             outcome = {success: false, failed: embed_result[:failed]}
           else
-            store.index_file(file[:path], file[:mtime], embed_result[:embedded])
+            store.index_file(
+              file[:path], file[:mtime], embed_result[:embedded],
+              text: document.text, verbatim: document.verbatim?, outline: document.outline,
+            )
             # Best-effort Qdrant upsert from the just-committed rows (post-commit,
             # outside the SQLite transaction). Reads (id, embedding) by file.
             @qdrant_index.try { |index| index.upsert(store.embeddings_for_file(file[:path])) }

@@ -12,12 +12,17 @@ module MnemodocServer
 
         SLIDE = /\Appt\/slides\/slide(\d+)\.xml\z/
 
-        def parse(zip : Compress::Zip::File) : Array(Section)
+        def parse(zip : Compress::Zip::File) : Sectionizer
           texts = slide_names(zip).compact_map do |name|
             read_entry(zip, name).try { |xml| slide_text(xml) }
           end
           combined = texts.reject(&.empty?).join("\n\n")
-          combined.empty? ? [] of Section : [Section.new(nil, nil, combined)]
+          sz = Sectionizer.new
+          # Fed line by line rather than as one blob: the sectionizer is also
+          # what numbers the stored text, and a multi-line string handed over in
+          # one call would count as a single line.
+          combined.each_line { |line| sz.text(line.chomp) }
+          sz
         end
 
         # Slide part names sorted by their numeric index.

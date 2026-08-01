@@ -477,7 +477,8 @@ Spectator.describe "MnemodocServer tools" do
       store.index_file("#{tmp_dir}/old.md", 1_i64, [
         MnemodocServer::Chunk.new(file_path: "#{tmp_dir}/old.md", heading: nil, parent_heading: nil,
           content: "existing", embedding: Array(Float32).new(768, 0.1_f32), token_count: 1, mtime: 1_i64),
-      ])
+      ], text: "existing\n", verbatim: true,
+        outline: [] of MnemodocServer::Indexer::OutlineEntry)
       fresh = File.join(tmp_dir, "fresh.md")
       File.write(fresh, "# Fresh\n\nbody")
 

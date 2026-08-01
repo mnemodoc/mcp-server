@@ -25,7 +25,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Docx do
       </w:body>
     </w:document>
     XML
-    chunks = handler.extract(write_docx(doc), mtime: 1_i64)
+    chunks = handler.extract(write_docx(doc), mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Intro", "Sub"])
     expect(chunks.map(&.parent_heading)).to eq([nil, "Intro"])
     expect(chunks.first.content).to contain("body joined.")
@@ -40,20 +40,20 @@ Spectator.describe MnemodocServer::Indexer::Format::Docx do
       </w:body>
     </w:document>
     XML
-    chunks = handler.extract(write_docx(doc), mtime: 1_i64)
+    chunks = handler.extract(write_docx(doc), mtime: 1_i64).chunks
     expect(chunks.any? { |chunk| chunk.heading == "Quote" }).to be_false
     expect(chunks.first.content).to contain("quoted line")
   end
 
   it "returns an empty array for a corrupt (non-zip) file" do
     File.write(tmp, "this is not a zip")
-    expect(handler.extract(tmp, mtime: 1_i64)).to be_empty
+    expect(handler.extract(tmp, mtime: 1_i64).chunks).to be_empty
   end
 
   it "returns an empty array when word/document.xml is absent" do
     File.open(tmp, "w") do |file|
       Compress::Zip::Writer.open(file, &.add("other.xml", "<x/>"))
     end
-    expect(handler.extract(tmp, mtime: 1_i64)).to be_empty
+    expect(handler.extract(tmp, mtime: 1_i64).chunks).to be_empty
   end
 end

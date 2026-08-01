@@ -84,6 +84,7 @@ src/mnemodoc_server/
   single_flight.cr                 Concurrent deduplication via Channel + Mutex
   connection_pool.cr               Per-host HTTP connection pool (for Ollama calls)
   chunk.cr                         Chunk struct + FileInfo struct
+  indexer/document.cr              Document struct (text + verbatim flag + outline + chunks) and OutlineEntry
   advisories.cr                    Persistent startup advisories, surfaced in every tool response
   licenses.cr                      Third-party license texts baked into the binary, so a redistributed artifact carries the notices its statically-linked deps require
   tool_registry.cr                 Builds the MCP::Server, registers the 6 tools + JSON Schemas, wraps results with advisories
@@ -118,7 +119,7 @@ src/mnemodoc_server/
       dita.cr                      DITA .dita topics (via nested_xml)
       fictionbook.cr               FictionBook .fb2 (via nested_xml)
   store/
-    sqlite.cr                      SQLite store (WAL) — files/chunks/meta, embeddings as blobs, vec0 KNN, write mutex
+    sqlite.cr                      SQLite store (WAL) — files/chunks/meta/documents/outline, embeddings as blobs, vec0 KNN, write mutex
     sqlite_vec.cr                  LibVec binding to the ext/sqlite-vec submodule (vec0), registered per connection
     qdrant_index.cr                Best-effort QdrantIndex over qdrant-client (opt-in semantic backend; replaces vec0 when search.backend=qdrant)
   search/
@@ -141,6 +142,9 @@ src/mnemodoc_server/
     delete.cr                      delete_file MCP tool
     status.cr                      status MCP tool
     context.cr                     get_project_context MCP tool (delegates to Roles::Selector)
+    document_access.cr             Shared path resolution + document loading + staleness for the two reading tools
+    outline.cr                     outline_document MCP tool
+    read.cr                        read_document MCP tool
 ```
 
 ### Project resolution and the `.mnemodoc/` marker
@@ -204,11 +208,60 @@ the same standing approval without anyone deciding to.
 
 ### Machine-readable CLI output
 
-Every subcommand that returns a result accepts `--json` (one JSON object on stdout) — `index`, `search`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not. Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`).
+Every subcommand that returns a result accepts `--json` (one JSON object on stdout) — `index`, `search`, `outline`, `read`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not. Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`).
 
 **Payloads evolve additively** — fields may be added, never removed or renamed. There is deliberately no schema version field.
 
 `--quiet` (on `index`, `delete`, `daemon status`, `daemon stop`) prints nothing and reports through the exit code. Two commands exit non-zero on an outcome rather than a crash: `daemon status` when no daemon is running (`systemctl is-active` semantics), and `index` when chunks failed to embed and nothing at all was indexed (an unreachable Ollama, typically) — a run with nothing to do still exits 0, and the payload carries a `failed` counter regardless. `ingest_path` refuses a path outside `paths:` and refuses a partial ingest when the embedding model has changed; both keep the index from being half-built or quietly poisoned.
+
+### Reading a document, and why it is served from the index
+
+`outline_document` and `read_document` fill the gap between the scattered
+passages `query_documents` returns and a re-read of the whole file. Both take a
+path resolved the way `delete_file` resolves one, and both go through
+`Tools::DocumentAccess`, so neither can drift from the other on what it reports
+about the document it served.
+
+**The text is stored at index time, in the same transaction as the chunks.**
+Reading the file instead would have been simpler and wrong in three ways: the
+chunks are a *filtered* view (the `ChunkAssembler` drops TOC sections and splits
+oversized ones, the `Sectionizer` discards a section whose body is blank), so
+serving them as "the document" would silently redact it; a file edited since
+indexing would answer with content the returned passages were never built from;
+and `pdftotext` would be back in a read path. The stored copy costs one extra
+copy of the corpus text — small against the vectors, which are 768 float32
+stored both in `chunks.embedding` and in `vec_chunks`.
+
+**The invariant that makes line addressing unambiguous: `OutlineEntry#start_line`
+indexes the stored text, never the file.** `verbatim` only tells the consumer
+whether that text happens to equal the file — true for Markdown, Org, AsciiDoc,
+RST and plain text, false for every extracted format. A handler therefore cannot
+mix the two, and the reading tools have no per-format special case: they slice
+`text`. Two cases are worth remembering: `.ipynb` is JSON but the document is
+the pseudo-Markdown the handler synthesises, and `.html` is text on disk yet the
+DOM walk never learns which source line an `<h2>` sat on, so it numbers its own
+extraction.
+
+The capture point is the `Sectionizer`, which already tracked heading levels and
+used to throw them away. Handlers reading a text file pass the true source line;
+the rest let it number what they emit. Markdown parses content already stripped
+of its frontmatter, so it adds the dropped line count back — without that, every
+heading in a file with frontmatter is off by exactly that many lines, an error
+that passes every functional test.
+
+**Staleness is reported, never repaired.** A changed or deleted file yields
+`stale: true` plus a `warnings` entry, and the indexed revision is still served.
+Repairing would put an embedding call and a write in a read path, duplicating
+what the daemon's watcher already does.
+
+**Existing indexes catch up without Ollama.** `MnemodocServer.backfill_documents!`
+runs before the startup crawl and rebuilds the missing text and outline by
+re-reading and re-parsing — the vectors are already stored and still valid. It
+lives in the bootstrap rather than in `Store::SQLite#migrate!` because it needs
+the `Format::Registry`, and the store must not depend on the indexer. Note it
+re-attaches the embeddings before rewriting the chunks: `chunks_for_files`
+deliberately returns them empty, so writing those straight back through
+`index_file` would erase every vector of the file.
 
 ### Role selection on a weak signal
 
@@ -314,6 +367,8 @@ the user's critical path.
 | `list_files` | List indexed files with metadata |
 | `delete_file` | Remove a file from the index |
 | `status` | Server status: chunk count, Ollama config, version |
+| `outline_document` | A document's heading plan: level, title, start/end line, length |
+| `read_document` | A numbered window of a stored document, served from the index |
 | `get_project_context` | Select the role to adopt for the current files/task/query; returns the role's markdown + structured `role`/`reason`/`score`/`candidates` |
 
 Outside an initialised project every one of them returns the same non-error
@@ -471,6 +526,10 @@ Key spec files:
 - `spec/crawler_spec.cr` — file scanning, mtime-based change detection
 - `spec/role_spec.cr` / `spec/selector_spec.cr` — role loading + B3 selection cascade
 - `spec/cli_context_spec.cr` — `context` subcommand end to end
+- `spec/document_capture_spec.cr` — Sectionizer outline/text capture, Document
+- `spec/tools_read_spec.cr` / `spec/tools_outline_spec.cr` — the two reading tools
+- `spec/backfill_documents_spec.cr` — rebuild without Ollama, embeddings preserved
+- `spec/cli_document_spec.cr` — `outline` / `read` subcommands end to end
 - `spec/project_discovery_spec.cr` — marker walk-up, anchoring, no index dir without a project
 - `spec/uninitialized_project_spec.cr` — every tool short-circuits with the `init` invitation
 - `spec/cli_init_spec.cr` — `init` / `uninit` end to end (marker, path detection, --force)

@@ -21,7 +21,11 @@ module MnemodocServer
       # their parent file is removed; `meta` stores key-value pairs such as
       # the embedding model name for mismatch detection; `vec_chunks` is the
       # vec0 virtual table providing KNN search (rowid = chunks.id); `chunks_fts`
-      # is the FTS5 virtual table providing BM25 keyword search (rowid = chunks.id).
+      # is the FTS5 virtual table providing BM25 keyword search (rowid = chunks.id);
+      # `documents` holds each file's text as the reading tools serve it, with
+      # `verbatim` telling the file itself apart from a handler's extraction; and
+      # `outline` holds its heading plan. Both cascade with their file, like
+      # `chunks`, so removal needs no extra cleanup path.
       SCHEMA = <<-SQL
         CREATE TABLE IF NOT EXISTS files (
           path       TEXT    PRIMARY KEY,
@@ -54,7 +58,24 @@ module MnemodocServer
           content,
           heading,
           file_path UNINDEXED
-        )
+        );
+
+        CREATE TABLE IF NOT EXISTS documents (
+          file_path  TEXT    PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE,
+          text       TEXT    NOT NULL,
+          line_count INTEGER NOT NULL,
+          verbatim   INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS outline (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_path  TEXT    NOT NULL REFERENCES files(path) ON DELETE CASCADE,
+          level      INTEGER NOT NULL,
+          title      TEXT    NOT NULL,
+          start_line INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_outline_file ON outline(file_path)
       SQL
 
       # vec0: when false (the qdrant backend), the vec_chunks virtual table is
@@ -145,7 +166,8 @@ module MnemodocServer
       # vec_chunks) commit or roll back together in ONE transaction on ONE
       # connection, so a crash or exception mid-write can never leave an orphan
       # files row (which would make file_indexed? wrongly skip re-indexing).
-      def index_file(path : String, mtime : Int64, chunks : Array(Chunk)) : Nil
+      def index_file(path : String, mtime : Int64, chunks : Array(Chunk),
+                     text : String, verbatim : Bool, outline : Array(Indexer::OutlineEntry)) : Nil
         invalidate_chunk_count
         @write_mutex.synchronize do
           now = Time.utc.to_unix
@@ -157,8 +179,71 @@ module MnemodocServer
             )
             after_file_upsert(path)
             write_chunks_into(cnn, chunks)
+            write_document_into(cnn, path, text, verbatim, outline)
           end
         end
+      end
+
+      # Replaces a file's document text and outline. Runs on the same connection
+      # and inside the same transaction as the chunk write, so the stored text
+      # can never describe a different revision from the chunks searched against
+      # it — which is the whole reason reading serves this copy rather than the
+      # file on disk.
+      private def write_document_into(cnn : DB::Connection, path : String, text : String,
+                                      verbatim : Bool, outline : Array(Indexer::OutlineEntry)) : Nil
+        cnn.exec("DELETE FROM documents WHERE file_path = ?", path)
+        cnn.exec("DELETE FROM outline WHERE file_path = ?", path)
+        cnn.exec(
+          "INSERT INTO documents (file_path, text, line_count, verbatim) VALUES (?, ?, ?, ?)",
+          path, text, text.lines.size, verbatim ? 1 : 0
+        )
+        outline.each do |entry|
+          cnn.exec(
+            "INSERT INTO outline (file_path, level, title, start_line) VALUES (?, ?, ?, ?)",
+            path, entry.level, entry.title, entry.start_line
+          )
+        end
+      end
+
+      # The stored document for a path, or nil when the file is unknown or was
+      # indexed before documents were stored.
+      def document_for(path : String) : {text: String, line_count: Int32, verbatim: Bool}?
+        @db.query_one?(
+          "SELECT text, line_count, verbatim FROM documents WHERE file_path = ?",
+          path, as: {String, Int32, Int32}
+        ).try { |row| {text: row[0], line_count: row[1], verbatim: row[2] != 0} }
+      end
+
+      # A file's plan, in document order. Ordering by start_line makes the order
+      # a property of the rows rather than of the insertion sequence; id only
+      # breaks ties between two headings reported on one line.
+      def outline_for(path : String) : Array(Indexer::OutlineEntry)
+        entries = [] of Indexer::OutlineEntry
+        @db.query(
+          "SELECT level, title, start_line FROM outline WHERE file_path = ? ORDER BY start_line, id",
+          path
+        ) do |result_set|
+          result_set.each do
+            entries << Indexer::OutlineEntry.new(
+              result_set.read(Int32), result_set.read(String), result_set.read(Int32)
+            )
+          end
+        end
+        entries
+      end
+
+      # Indexed files carrying no stored document — an index built before this
+      # existed. Drives the startup backfill, which needs the recorded mtime so
+      # rebuilding leaves the file's freshness bookkeeping untouched.
+      def files_missing_documents : Array({path: String, mtime: Int64})
+        rows = [] of {path: String, mtime: Int64}
+        @db.query(
+          "SELECT f.path, f.mtime FROM files f LEFT JOIN documents d ON d.file_path = f.path " \
+          "WHERE d.file_path IS NULL ORDER BY f.path"
+        ) do |result_set|
+          result_set.each { rows << {path: result_set.read(String), mtime: result_set.read(Int64)} }
+        end
+        rows
       end
 
       # Test-only seam: invoked inside the index_file transaction, right after

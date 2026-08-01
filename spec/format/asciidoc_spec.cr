@@ -8,7 +8,7 @@ Spectator.describe MnemodocServer::Indexer::Format::AsciiDoc do
 
   it "splits on == and === with parent set" do
     File.write(tmp, "= Title\nintro\n== Section\nbody\n=== Sub\nsub body")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["= Title", "== Section", "=== Sub"])
     expect(chunks.map(&.parent_heading)).to eq([nil, "= Title", "== Section"])
   end
@@ -30,7 +30,7 @@ Spectator.describe MnemodocServer::Indexer::Format::AsciiDoc do
       Visit https://ollama.com[ollama.com] to download the model before running the server.
       ADOC
       File.write(tmp, content)
-      chunks = stripping.extract(tmp, mtime: 1_i64)
+      chunks = stripping.extract(tmp, mtime: 1_i64).chunks
       body = chunks.join(" ", &.content)
       expect(body).not_to contain("Home")
       expect(body).not_to contain("Installation")
@@ -41,7 +41,7 @@ Spectator.describe MnemodocServer::Indexer::Format::AsciiDoc do
   # A leading equals sign inside a listing block is content, not a heading.
   it "does not read an equals line inside a listing block as a heading" do
     File.write(tmp, "= Section\nbody\n----\n= not a heading\necho hi\n----\nafter")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["= Section"])
     expect(chunks.first.content).to contain("echo hi")
     expect(chunks.first.content).to contain("after")

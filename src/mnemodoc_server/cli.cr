@@ -636,6 +636,89 @@ module MnemodocServer
       end
     end
 
+    # Prints an indexed document's heading plan. The command-line counterpart of
+    # the outline_document MCP tool, which it delegates to outright so the two
+    # surfaces cannot answer differently.
+    class Outline < Admiral::Command
+      include CLIErrorHandling
+      include CLIOutput
+      define_help description: "Print an indexed document's heading plan"
+
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the plan as JSON"
+      define_argument path : String, description: "Path of an indexed file", required: true # ameba:disable Lint/UselessAssign
+
+      def run
+        store : Store::SQLite? = nil # ameba:disable Lint/UselessAssign
+        MnemodocServer.init_app!(flags.config)
+        config = MnemodocServer.config
+        opened = store = MnemodocServer.open_store(config)
+
+        result = Tools::Outline.new(opened).call(
+          {"path" => JSON::Any.new(arguments.path)} of String => JSON::Any
+        )
+        payload = result.structured_content || JSON::Any.new({} of String => JSON::Any)
+
+        emit(payload, json: flags.json, quiet: false) do
+          payload["sections"].as_a.each do |section|
+            # Two spaces per level below the first, so the plan reads as the
+            # nesting it describes.
+            indent = "  " * (section["level"].as_i - 1)
+            puts "#{section["start_line"]}\t#{indent}#{section["title"]} (#{section["lines"]} lines)"
+          end
+          payload["warnings"]?.try(&.as_a.each { |warning| STDERR.puts warning.as_s })
+        end
+      rescue ex : MCP::ToolError
+        handle_error(ex, json: flags.json)
+      ensure
+        store.try(&.close)
+      end
+    end
+
+    # Prints a numbered window of an indexed document, served from the index
+    # rather than from the file. The command-line counterpart of the
+    # read_document MCP tool, delegating to it for the same reason as `outline`.
+    class Read < Admiral::Command
+      include CLIErrorHandling
+      include CLIOutput
+      define_help description: "Print numbered lines of an indexed document"
+
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the window as JSON"
+      # ameba:disable Lint/UselessAssign
+      define_flag offset : Int32, long: "offset", default: 1, description: "1-based first line to print"
+      # ameba:disable Lint/UselessAssign
+      define_flag limit : Int32, long: "limit", default: 200, description: "Maximum lines to print (max 2000)"
+      define_argument path : String, description: "Path of an indexed file", required: true # ameba:disable Lint/UselessAssign
+
+      def run
+        store : Store::SQLite? = nil # ameba:disable Lint/UselessAssign
+        MnemodocServer.init_app!(flags.config)
+        config = MnemodocServer.config
+        opened = store = MnemodocServer.open_store(config)
+
+        result = Tools::Read.new(opened).call({
+          "path"   => JSON::Any.new(arguments.path),
+          "offset" => JSON::Any.new(flags.offset.to_i64),
+          "limit"  => JSON::Any.new(flags.limit.to_i64),
+        } of String => JSON::Any)
+        payload = result.structured_content || JSON::Any.new({} of String => JSON::Any)
+
+        emit(payload, json: flags.json, quiet: false) do
+          print payload["content"].as_s
+          # Staleness is the one thing a human reading raw lines cannot see, so
+          # it goes to stderr rather than into the content carried by stdout.
+          payload["warnings"]?.try(&.as_a.each { |warning| STDERR.puts warning.as_s })
+        end
+      rescue ex : MCP::ToolError
+        handle_error(ex, json: flags.json)
+      ensure
+        store.try(&.close)
+      end
+    end
+
     # Resolves which role to adopt for the current files/task/query and prints
     # the role's markdown to stdout. This is the command-line counterpart of the
     # get_project_context MCP tool: both channels share one Roles::Selector
@@ -1004,6 +1087,8 @@ module MnemodocServer
     register_sub_command serve, Serve, description: "Start the MCP server"
     register_sub_command index, Index, description: "Index a file or directory"
     register_sub_command search, Search, description: "Search the index"
+    register_sub_command outline, Outline, description: "Print a document's heading plan"
+    register_sub_command read, Read, description: "Print numbered lines of a document"
     register_sub_command status, Status, description: "Show index status"
     register_sub_command delete, Delete, description: "Remove a file from the index"
     register_sub_command context, Context, description: "Select and print the role for the current context"

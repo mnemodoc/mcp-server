@@ -26,7 +26,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Odt do
       </office:text></office:body>
     </office>
     XML
-    chunks = handler.extract(write_odt(content), mtime: 1_i64)
+    chunks = handler.extract(write_odt(content), mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Top", "Sub"])
     expect(chunks.map(&.parent_heading)).to eq([nil, "Top"])
     expect(chunks.first.content).to contain("intro")
@@ -34,6 +34,6 @@ Spectator.describe MnemodocServer::Indexer::Format::Odt do
 
   it "returns an empty array for a corrupt (non-zip) file" do
     File.write(tmp, "not a zip")
-    expect(handler.extract(tmp, mtime: 1_i64)).to be_empty
+    expect(handler.extract(tmp, mtime: 1_i64).chunks).to be_empty
   end
 end

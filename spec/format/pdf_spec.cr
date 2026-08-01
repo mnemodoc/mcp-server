@@ -29,18 +29,18 @@ Spectator.describe MnemodocServer::Indexer::Format::Pdf do
 
   it "produces chunks from extracted text on success" do
     handler = MnemodocServer::Indexer::Format::Pdf.new(assembler, command: fake_ok)
-    chunks = handler.extract(pdf, mtime: 1_i64)
+    chunks = handler.extract(pdf, mtime: 1_i64).chunks
     expect(chunks.any?(&.content.includes?("extracted body"))).to be_true
   end
 
   it "returns empty array when pdftotext exits non-zero" do
     handler = MnemodocServer::Indexer::Format::Pdf.new(assembler, command: fake_fail)
-    expect(handler.extract(pdf, mtime: 1_i64)).to be_empty
+    expect(handler.extract(pdf, mtime: 1_i64).chunks).to be_empty
   end
 
   it "returns empty array when the command does not exist" do
     handler = MnemodocServer::Indexer::Format::Pdf.new(assembler, command: "/nonexistent/pdftotext")
-    expect(handler.extract(pdf, mtime: 1_i64)).to be_empty
+    expect(handler.extract(pdf, mtime: 1_i64).chunks).to be_empty
   end
 
   # Process.run has no timeout, so a pdftotext that never returns parks the
@@ -60,7 +60,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Pdf do
       MnemodocServer::Indexer::ChunkAssembler.new, command: hang, timeout: 1.second)
     begin
       started = Time.instant
-      chunks = handler.extract(pdf, 1_i64)
+      chunks = handler.extract(pdf, 1_i64).chunks
       elapsed = Time.instant - started
       expect(chunks).to be_empty
       expect(elapsed).to be < 30.seconds

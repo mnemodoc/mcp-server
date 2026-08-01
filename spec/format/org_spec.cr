@@ -8,14 +8,14 @@ Spectator.describe MnemodocServer::Indexer::Format::Org do
 
   it "splits on * and ** with parent set" do
     File.write(tmp, "* Section A\nbody a\n** Sub A1\nsub body\n* Section B\nbody b")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["* Section A", "** Sub A1", "* Section B"])
     expect(chunks.map(&.parent_heading)).to eq([nil, "* Section A", nil])
   end
 
   it "keeps preamble text before the first star heading" do
     File.write(tmp, "intro text\n* Heading\nbody")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.first.heading).to be_nil
     expect(chunks.first.content).to contain("intro text")
   end
@@ -36,7 +36,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Org do
       See [[file:api.org][the API reference]] for details on authentication.
       ORG
       File.write(tmp, content)
-      chunks = stripping.extract(tmp, mtime: 1_i64)
+      chunks = stripping.extract(tmp, mtime: 1_i64).chunks
       body = chunks.join(" ", &.content)
       expect(body).not_to contain("Home")
       expect(body).to contain("authentication")
@@ -47,7 +47,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Org do
   # A leading star inside a source block is emphasis or code, not a heading.
   it "does not read a starred line inside a source block as a heading" do
     File.write(tmp, "* Section\nbody\n#+BEGIN_SRC sh\n* not a heading\necho hi\n#+END_SRC\nafter")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["* Section"])
     expect(chunks.first.content).to contain("echo hi")
     expect(chunks.first.content).to contain("after")

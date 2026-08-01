@@ -9,9 +9,15 @@ module MnemodocServer
       # into (their text is read in one go via XML#content).
       module NestedXml
         def self.sections(root : XML::Node, sections : Set(String), titles : Set(String), paragraphs : Set(String)) : Array(Section)
+          sectionize(root, sections, titles, paragraphs).sections
+        end
+
+        # The same walk, handing back the sectionizer so the outline and the
+        # extracted text come from the pass that built the sections.
+        def self.sectionize(root : XML::Node, sections : Set(String), titles : Set(String), paragraphs : Set(String)) : Sectionizer
           sz = Sectionizer.new
           walk(root, depth: 0, sz: sz, sections: sections, titles: titles, paragraphs: paragraphs)
-          sz.sections
+          sz
         end
 
         # Depth-first walk; section containers deepen the level, titles open a

@@ -320,7 +320,7 @@ Spectator.describe MnemodocServer::Store::SQLite do
     it "makes chunks visible immediately" do
       embedding = Array(Float32).new(4, 0.5_f32)
       chunks = [MnemodocServer::Chunk.new(file_path: "doc/c.md", heading: nil, parent_heading: nil, content: "cached content", embedding: embedding, token_count: 5, mtime: 2000_i64)]
-      store.index_file("doc/c.md", 2000_i64, chunks)
+      store.index_file("doc/c.md", 2000_i64, chunks, text: "stored text\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
 
       all = store.chunks_for_files(["doc/c.md"])
       expect(all.size).to eq(1)
@@ -329,16 +329,16 @@ Spectator.describe MnemodocServer::Store::SQLite do
 
     it "replaces a file's chunks on a second index_file call" do
       embedding = Array(Float32).new(4, 0.1_f32)
-      store.index_file("doc/d.md", 1000_i64, [MnemodocServer::Chunk.new(file_path: "doc/d.md", heading: nil, parent_heading: nil, content: "v1", embedding: embedding, token_count: 1, mtime: 1000_i64)])
+      store.index_file("doc/d.md", 1000_i64, [MnemodocServer::Chunk.new(file_path: "doc/d.md", heading: nil, parent_heading: nil, content: "v1", embedding: embedding, token_count: 1, mtime: 1000_i64)], text: "stored text\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
       expect(store.chunks_for_files(["doc/d.md"]).first.content).to eq("v1")
 
-      store.index_file("doc/d.md", 2000_i64, [MnemodocServer::Chunk.new(file_path: "doc/d.md", heading: nil, parent_heading: nil, content: "v2", embedding: embedding, token_count: 1, mtime: 2000_i64)])
+      store.index_file("doc/d.md", 2000_i64, [MnemodocServer::Chunk.new(file_path: "doc/d.md", heading: nil, parent_heading: nil, content: "v2", embedding: embedding, token_count: 1, mtime: 2000_i64)], text: "stored text\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
       expect(store.chunks_for_files(["doc/d.md"]).first.content).to eq("v2")
     end
 
     it "removes a file's chunks on delete_file" do
       embedding = Array(Float32).new(4, 0.2_f32)
-      store.index_file("doc/e.md", 1000_i64, [MnemodocServer::Chunk.new(file_path: "doc/e.md", heading: nil, parent_heading: nil, content: "to delete", embedding: embedding, token_count: 1, mtime: 1000_i64)])
+      store.index_file("doc/e.md", 1000_i64, [MnemodocServer::Chunk.new(file_path: "doc/e.md", heading: nil, parent_heading: nil, content: "to delete", embedding: embedding, token_count: 1, mtime: 1000_i64)], text: "stored text\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
       expect(store.chunks_for_files(["doc/e.md"]).size).to eq(1)
       store.delete_file("doc/e.md")
       expect(store.chunks_for_files(["doc/e.md"])).to be_empty
@@ -359,7 +359,7 @@ Spectator.describe MnemodocServer::Store::SQLite do
       embedding = Array(Float32).new(4, 0.3_f32)
       chunks = [MnemodocServer::Chunk.new(file_path: "doc/atomic.md", heading: nil, parent_heading: nil, content: "orphan", embedding: embedding, token_count: 1, mtime: 1000_i64)]
 
-      expect { raising_store.index_file("doc/atomic.md", 1000_i64, chunks) }.to raise_error(RaisingStore::Boom)
+      expect { raising_store.index_file("doc/atomic.md", 1000_i64, chunks, text: "orphan\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry) }.to raise_error(RaisingStore::Boom)
 
       # The whole transaction (files upsert included) must have rolled back, so a
       # fresh store reading the same database sees no trace of the file.
@@ -516,7 +516,8 @@ Spectator.describe MnemodocServer::Store::SQLite do
       store.index_file("doc/del.md", 1000_i64, [
         MnemodocServer::Chunk.new(file_path: "doc/del.md", heading: "## H", parent_heading: nil,
           content: "searchable body", embedding: embedding, token_count: 1, mtime: 1000_i64),
-      ])
+      ], text: "## H\nsearchable body\n", verbatim: true,
+        outline: [] of MnemodocServer::Indexer::OutlineEntry)
       expect(store.vec_chunk_count).to eq(1)
       expect(store.fts_chunk_count).to eq(1)
       store.close
@@ -551,10 +552,10 @@ Spectator.describe MnemodocServer::Store::SQLite do
 
       expect(store.chunk_count).to eq(0)
 
-      store.index_file("doc/a.md", 1_i64, [chunk.call("doc/a.md", "one")])
+      store.index_file("doc/a.md", 1_i64, [chunk.call("doc/a.md", "one")], text: "stored text\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
       expect(store.chunk_count).to eq(1)
 
-      store.index_file("doc/b.md", 1_i64, [chunk.call("doc/b.md", "two"), chunk.call("doc/b.md", "three")])
+      store.index_file("doc/b.md", 1_i64, [chunk.call("doc/b.md", "two"), chunk.call("doc/b.md", "three")], text: "stored text\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
       expect(store.chunk_count).to eq(3)
 
       store.delete_file("doc/b.md")
@@ -562,6 +563,89 @@ Spectator.describe MnemodocServer::Store::SQLite do
 
       store.clear_index!
       expect(store.chunk_count).to eq(0)
+    end
+  end
+
+  describe "stored documents and outlines" do
+    private def one_chunk(path : String) : Array(MnemodocServer::Chunk)
+      [MnemodocServer::Chunk.new(file_path: path, heading: "## A", parent_heading: nil,
+        content: "body a", embedding: Array(Float32).new(768, 0.1_f32), token_count: 2, mtime: 1000_i64)]
+    end
+
+    private def entry(level : Int32, title : String, line : Int32) : MnemodocServer::Indexer::OutlineEntry
+      MnemodocServer::Indexer::OutlineEntry.new(level, title, line)
+    end
+
+    it "stores the document text and outline with the chunks" do
+      store.index_file("/docs/a.md", 1000_i64, one_chunk("/docs/a.md"),
+        text: "# Title\n\n## A\nbody a\n", verbatim: true,
+        outline: [entry(1, "# Title", 1), entry(2, "## A", 3)])
+
+      document = store.document_for("/docs/a.md")
+      expect(document).not_to be_nil
+      expect(document.try(&.[:text])).to eq("# Title\n\n## A\nbody a\n")
+      expect(document.try(&.[:line_count])).to eq(4)
+      expect(document.try(&.[:verbatim])).to be_true
+      expect(store.outline_for("/docs/a.md").map(&.title)).to eq(["# Title", "## A"])
+      expect(store.outline_for("/docs/a.md").map(&.level)).to eq([1, 2])
+    end
+
+    # Ordering is a property of the data, not of the insertion sequence: the
+    # chunks table gets its document order from being deleted and rewritten in
+    # one transaction, which is an invariant of the write path rather than of
+    # the rows.
+    it "returns the outline in document order regardless of insertion order" do
+      store.index_file("/docs/b.md", 1000_i64, one_chunk("/docs/b.md"),
+        text: "x\ny\nz\n", verbatim: true,
+        outline: [entry(2, "## Late", 3), entry(1, "# Early", 1)])
+
+      expect(store.outline_for("/docs/b.md").map(&.start_line)).to eq([1, 3])
+    end
+
+    it "drops the document and outline when the file is deleted" do
+      store.index_file("/docs/c.md", 1000_i64, one_chunk("/docs/c.md"),
+        text: "body c\n", verbatim: true, outline: [entry(2, "## C", 1)])
+      store.delete_file("/docs/c.md")
+
+      expect(store.document_for("/docs/c.md")).to be_nil
+      expect(store.outline_for("/docs/c.md")).to be_empty
+    end
+
+    it "replaces the document and outline on re-index rather than appending" do
+      2.times do |i|
+        store.index_file("/docs/d.md", (1000 + i).to_i64, one_chunk("/docs/d.md"),
+          text: "run #{i}\n", verbatim: true, outline: [entry(2, "## D", 1)])
+      end
+
+      expect(store.document_for("/docs/d.md").try(&.[:text])).to eq("run 1\n")
+      expect(store.outline_for("/docs/d.md").size).to eq(1)
+    end
+
+    it "records a non-verbatim document as such" do
+      store.index_file("/docs/e.docx", 1000_i64, one_chunk("/docs/e.docx"),
+        text: "extracted\n", verbatim: false, outline: [] of MnemodocServer::Indexer::OutlineEntry)
+
+      expect(store.document_for("/docs/e.docx").try(&.[:verbatim])).to be_false
+    end
+
+    it "reports nothing missing once every file carries a document" do
+      store.index_file("/docs/f.md", 1000_i64, one_chunk("/docs/f.md"),
+        text: "body f\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
+
+      expect(store.files_missing_documents).to be_empty
+    end
+
+    it "lists a file whose document row is gone" do
+      store.index_file("/docs/g.md", 1234_i64, one_chunk("/docs/g.md"),
+        text: "body g\n", verbatim: true, outline: [] of MnemodocServer::Indexer::OutlineEntry)
+      # Reaching into the connection rather than adding a production method
+      # that exists only for this spec: what is simulated here is an index
+      # written before documents were stored, which no public API produces.
+      store.@db.exec("DELETE FROM documents WHERE file_path = ?", "/docs/g.md")
+
+      missing = store.files_missing_documents
+      expect(missing.map(&.[:path])).to eq(["/docs/g.md"])
+      expect(missing.first[:mtime]).to eq(1234_i64)
     end
   end
 end

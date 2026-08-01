@@ -20,7 +20,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Fodp do
       </office:presentation></office:body>
     </office>
     XML
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.size).to eq(1)
     expect(chunks.first.heading).to be_nil
     expect(chunks.first.content).to contain("first slide")
@@ -28,6 +28,6 @@ Spectator.describe MnemodocServer::Indexer::Format::Fodp do
   end
 
   it "returns an empty array when the file is unreadable" do
-    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.fodp", mtime: 1_i64)).to be_empty
+    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.fodp", mtime: 1_i64).chunks).to be_empty
   end
 end

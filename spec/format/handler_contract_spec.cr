@@ -79,7 +79,7 @@ Spectator.describe "format handler contract" do
     File.write(path, "# Déploiement\n\n## Prérequis\n\nUn café, une clé SSH.\n")
     handler = registry.for(path, explicit: true)
     expect(handler).not_to be_nil
-    chunks = handler.try(&.extract(path, 0_i64)) || [] of MnemodocServer::Chunk
+    chunks = handler.try(&.extract(path, 0_i64).chunks) || [] of MnemodocServer::Chunk
     expect(chunks.map(&.content).join("\n")).to contain("Un café, une clé SSH.")
   end
 
@@ -120,7 +120,7 @@ Spectator.describe "format handler contract" do
 
       handler = small_limit_registry.for(path, explicit: true)
       expect(handler).not_to be_nil
-      expect(handler.try(&.extract(path, 0_i64)) || [] of MnemodocServer::Chunk).to be_empty
+      expect(handler.try(&.extract(path, 0_i64).chunks) || [] of MnemodocServer::Chunk).to be_empty
     end
 
     it "skips a plain file larger than the limit" do
@@ -130,14 +130,14 @@ Spectator.describe "format handler contract" do
 
       handler = small_limit_registry.for(path, explicit: true)
       expect(handler).not_to be_nil
-      expect(handler.try(&.extract(path, 0_i64)) || [] of MnemodocServer::Chunk).to be_empty
+      expect(handler.try(&.extract(path, 0_i64).chunks) || [] of MnemodocServer::Chunk).to be_empty
     end
 
     it "still reads a document within the limit" do
       path = File.join(tmp_dir, "small.md")
       File.write(path, "# Title\n\n## S\n\nbody")
       handler = small_limit_registry.for(path, explicit: true)
-      chunks = handler.try(&.extract(path, 0_i64)) || [] of MnemodocServer::Chunk
+      chunks = handler.try(&.extract(path, 0_i64).chunks) || [] of MnemodocServer::Chunk
       expect(chunks).not_to be_empty
     end
   end

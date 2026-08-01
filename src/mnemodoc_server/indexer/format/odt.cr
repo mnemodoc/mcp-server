@@ -9,18 +9,24 @@ module MnemodocServer
         # .odt plus the Writer template variant (.ott), same content.xml structure.
         EXTENSIONS = %w(.odt .ott)
 
-        def parse(zip : Compress::Zip::File) : Array(Section)
+        def parse(zip : Compress::Zip::File) : Sectionizer
           xml = read_entry(zip, "content.xml")
-          return [] of Section unless xml
-          sections_from_document(XML.parse(xml))
+          return Sectionizer.new unless xml
+          sectionize_document(XML.parse(xml))
         end
 
         # Builds Sections from a parsed ODF text document. Public so the flat-XML
         # variant (.fodt) can reuse the same walk on a non-zipped document.
         def sections_from_document(node : XML::Node) : Array(Section)
+          sectionize_document(node).sections
+        end
+
+        # The same walk, handing back the sectionizer so the outline and the
+        # extracted text come from the pass that built the sections.
+        def sectionize_document(node : XML::Node) : Sectionizer
           sz = Sectionizer.new
           walk(node, sz)
-          sz.sections
+          sz
         end
 
         # Walks the DOM; <text:h> opens a heading, <text:p> adds body text, and

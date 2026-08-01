@@ -18,15 +18,22 @@ module MnemodocServer
         def initialize(@assembler : ChunkAssembler)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
-          sections = NestedXml.sections(XML.parse(read_text(path)), SECTIONS, TITLES, PARAGRAPHS)
-          @assembler.assemble(path, sections, "", mtime)
+        def extract(path : String, mtime : Int64) : Document
+          sz = NestedXml.sectionize(XML.parse(read_text(path)), SECTIONS, TITLES, PARAGRAPHS)
+          # verbatim is false: the file is XML markup, and the document is the
+          # prose the walk pulled out of it.
+          Document.new(
+            text: sz.normalized_text,
+            verbatim: false,
+            outline: sz.outline,
+            chunks: @assembler.assemble(path, sz.sections, sz.normalized_text, mtime),
+          )
         rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         rescue ex
           Log.warn { "dita parse failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         end
       end
     end

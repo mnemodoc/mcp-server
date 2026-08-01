@@ -15,7 +15,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Pptx do
         zip.add("ppt/presentation.xml", "<p:presentation/>")
       end
     end
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.size).to eq(1)
     expect(chunks.first.heading).to be_nil
     body = chunks.first.content
@@ -26,7 +26,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Pptx do
 
   it "returns an empty array for a corrupt (non-zip) file" do
     File.write(tmp, "not a zip")
-    expect(handler.extract(tmp, mtime: 1_i64)).to be_empty
+    expect(handler.extract(tmp, mtime: 1_i64).chunks).to be_empty
   end
 
   # A slide number too large for Int32 made String#to_i raise, and the rescue
@@ -40,7 +40,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Pptx do
       end
     end
 
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.content).join(" ")).to contain("real content")
   end
 end

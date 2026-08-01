@@ -15,24 +15,41 @@ module MnemodocServer
         def initialize(@assembler : ChunkAssembler)
         end
 
-        def extract(path : String, mtime : Int64) : Array(Chunk)
-          @assembler.assemble(path, parse_sections(read_text(path)), "", mtime)
+        def extract(path : String, mtime : Int64) : Document
+          sz = sectionize(read_text(path))
+          # verbatim is false even though the file is text on disk: the parser
+          # walks the DOM and never learns which source line an <h2> sat on, so
+          # it cannot honour the "start_line indexes the file" side of the
+          # invariant. It numbers its own extraction instead.
+          Document.new(
+            text: sz.normalized_text,
+            verbatim: false,
+            outline: sz.outline,
+            chunks: @assembler.assemble(path, sz.sections, sz.normalized_text, mtime),
+          )
         rescue ex : File::Error | DocumentTooLarge
           Log.warn { "read failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         rescue ex
           Log.warn { "html parse failed for #{path}: #{ex.message}" }
-          [] of Chunk
+          Document.empty
         end
 
         # Parses an HTML document into Sections by walking the DOM and opening a
         # section at each <h1>..<h6>. Public so Format::Epub can reuse HTML
         # parsing for an EPUB's XHTML chapters.
         def parse_sections(content : String) : Array(Section)
+          sectionize(content).sections
+        end
+
+        # The same walk, handing back the sectionizer so a caller that needs the
+        # outline and the extracted text gets both from one pass. Public for the
+        # same reason as parse_sections: an EPUB parses chapter by chapter.
+        def sectionize(content : String) : Sectionizer
           document = XML.parse_html(content)
           sz = Sectionizer.new
           visit(document, sz)
-          sz.sections
+          sz
         end
 
         # Depth-first walk feeding headings and text into the Sectionizer.

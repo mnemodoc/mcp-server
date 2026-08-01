@@ -16,12 +16,12 @@ module MnemodocServer
         # A document title style -> level 1.
         TITLE = /\A(?:title|titre)\z/i
 
-        def parse(zip : Compress::Zip::File) : Array(Section)
-          xml = read_entry(zip, "word/document.xml")
-          return [] of Section unless xml
+        def parse(zip : Compress::Zip::File) : Sectionizer
           sz = Sectionizer.new
+          xml = read_entry(zip, "word/document.xml")
+          return sz unless xml
           walk(XML.parse(xml), sz)
-          sz.sections
+          sz
         end
 
         # Walks the DOM; each <w:p> is a paragraph (not descended into further),

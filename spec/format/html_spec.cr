@@ -15,7 +15,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Html do
     </body></html>
     HTML
     File.write(tmp, html)
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to eq(["Top", "Sub"])
     expect(chunks.map(&.parent_heading)).to eq([nil, "Top"])
     expect(chunks[0].content).to contain("intro text")
@@ -23,7 +23,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Html do
   end
 
   it "returns empty array when unreadable" do
-    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.html", mtime: 1_i64)).to be_empty
+    expect(handler.extract("/tmp/none-#{Random::Secure.hex(4)}.html", mtime: 1_i64).chunks).to be_empty
   end
 
   it "exposes parse_sections that splits HTML text into sections by heading" do
@@ -48,7 +48,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Html do
 
     cfg = MnemodocServer::ChunkingConfig.from_yaml("strip_link_only_lines: true\nmerge_preamble_into_first_section: true")
     folding = MnemodocServer::Indexer::Format::Html.new(MnemodocServer::Indexer::ChunkAssembler.new(cfg))
-    chunks = folding.extract(tmp, mtime: 1_i64)
+    chunks = folding.extract(tmp, mtime: 1_i64).chunks
 
     # No standalone preamble chunk: the (flattened) breadcrumb text rides with
     # the section, and the anchor text survives because strip cannot see it.
@@ -63,7 +63,7 @@ Spectator.describe MnemodocServer::Indexer::Format::Html do
   # folds a preamble into the first section had nothing left to fold.
   it "treats an empty heading as no heading" do
     File.write(tmp, "<html><body><h2></h2><p>Texte de corps.</p></body></html>")
-    chunks = handler.extract(tmp, mtime: 1_i64)
+    chunks = handler.extract(tmp, mtime: 1_i64).chunks
     expect(chunks.map(&.heading)).to all(be_nil)
   end
 end

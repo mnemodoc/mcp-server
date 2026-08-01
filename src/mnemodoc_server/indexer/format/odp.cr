@@ -9,19 +9,26 @@ module MnemodocServer
         # .odp plus the Impress template variant (.otp), same content.xml structure.
         EXTENSIONS = %w(.odp .otp)
 
-        def parse(zip : Compress::Zip::File) : Array(Section)
+        def parse(zip : Compress::Zip::File) : Sectionizer
           xml = read_entry(zip, "content.xml")
-          return [] of Section unless xml
-          sections_from_document(XML.parse(xml))
+          return Sectionizer.new unless xml
+          sectionize_document(XML.parse(xml))
         end
 
         # Builds Sections from a parsed ODF presentation document. Public so the
         # flat-XML variant (.fodp) can reuse the same walk on a non-zipped file.
         def sections_from_document(node : XML::Node) : Array(Section)
+          sectionize_document(node).sections
+        end
+
+        # The same walk, handing back the sectionizer so the extracted text is
+        # numbered by the pass that built the sections.
+        def sectionize_document(node : XML::Node) : Sectionizer
           parts = [] of String
           gather_paragraphs(node, parts)
-          combined = parts.join("\n")
-          combined.empty? ? [] of Section : [Section.new(nil, nil, combined)]
+          sz = Sectionizer.new
+          parts.each { |part| sz.text(part) }
+          sz
         end
 
         # Recursively collects the text of every <text:p> element, without
