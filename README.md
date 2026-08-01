@@ -376,6 +376,8 @@ project root.
 
 **Live re-indexing (daemon)** — while the daemon runs it watches the configured `paths` and re-indexes a document within ~1 s of it being created, modified, or deleted (polling, via the `file_watcher` shard). Enabled by default (`server.daemon_watch: true`); tune the cadence with `server.daemon_watch_interval` (seconds) or set `daemon_watch: false` to keep boot-time indexing only. Only the daemon watches; the standalone stdio fallback does not.
 
+**A bound on what one document may cost** — a file larger than `index.max_file_size` (default 10 MiB) is skipped rather than read whole into memory, with a warning naming it. Set it to `0` to remove the bound. This is the one setting that can leave a document out of the index without the index being wrong, so it is worth knowing about before wondering why a large file never turns up in results.
+
 **Auto-indexing on startup** — `serve` automatically re-indexes all `paths` from the config in the background. The server is immediately responsive; indexing happens concurrently. Files whose mtime hasn't changed since the last run are skipped, so restarts are cheap.
 
 ### The prompt hook

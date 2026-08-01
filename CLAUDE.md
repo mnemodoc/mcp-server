@@ -85,6 +85,7 @@ src/mnemodoc_server/
   connection_pool.cr               Per-host HTTP connection pool (for Ollama calls)
   chunk.cr                         Chunk struct + FileInfo struct
   advisories.cr                    Persistent startup advisories, surfaced in every tool response
+  licenses.cr                      Third-party license texts baked into the binary, so a redistributed artifact carries the notices its statically-linked deps require
   tool_registry.cr                 Builds the MCP::Server, registers the 6 tools + JSON Schemas, wraps results with advisories
   indexer/
     crawler.cr                     File/dir scanner + mtime change detection + parallel orchestration (registry dispatch)
@@ -95,6 +96,7 @@ src/mnemodoc_server/
     format/
       handler.cr                   Handler interface (read + parse → Chunks; never raises on content/IO)
       registry.cr                  Extension → handler dispatch; discovered-vs-named rule; plain-text fallback; opt-in PDF
+      fence_tracker.cr             Tracks fenced code blocks so their contents are never read as headings
       markdown.cr                  Markdown / MDX (## / ### headings, YAML frontmatter stripping)
       org.cr                       Org-mode (leading-star headings)
       asciidoc.cr                  AsciiDoc (leading-equals headings)
@@ -123,6 +125,7 @@ src/mnemodoc_server/
     semantic.cr                    Dot-product / cosine scoring — in-memory linear, vec0 KNN, and Qdrant KNN overloads
     keyword.cr                     FTS5/BM25 keyword search (query tokenized in Crystal, ranked per file by the store)
     hybrid.cr                      RRF fusion + recency bias (SearchResult)
+    hook_selection.cr              The prompt hook's whole injection rule (cosine gate + margin), kept here so the benchmark replays the shipped logic
   roles/
     role.cr                        Role at runtime (config + resolved path; markdown read lazily and cached)
     selector.cr                    Contextual-role selection (B3 cascade: weighted rules + semantic tie-break, shortlist restricted to roles that matched, word-boundary keyword matchers compiled once)
@@ -354,6 +357,7 @@ qdrant:               # required when search.backend: qdrant; SQLite stays the s
 index:
   concurrency: 4      # parallel files embedded at once (>= 1)
   pdf: false          # opt-in; requires pdftotext in PATH
+  max_file_size: 10485760  # bytes; a larger document is skipped rather than read whole (0 disables the bound)
 
 chunking:             # optional noise reduction; both default false (index unchanged). Re-index after changing.
   strip_link_only_lines: false             # drop pure breadcrumb lines (links + separators only); line-based markup only (Markdown/Org/AsciiDoc/RST), no-op on DOM/Office
@@ -369,6 +373,11 @@ context:              # optional — contextual-role selection (get_project_cont
       when_files: ["app/models/**", "app/policies/**"]  # glob triggers (File.match? on the path)
       when_task:  ["implement", "refactor"]             # keyword triggers on the task kind
       when_query: ["operation", "policy"]               # keyword triggers on the user query
+
+hook:                 # optional — the UserPromptSubmit passage injector (`prompt-hook`)
+  similarity_threshold: 0.515  # cosine the best passage must reach to be injected at all
+  margin_threshold: 0.02       # a runner-up within this cosine distance goes over too
+  max_passages: 3              # ceiling on the set injected when the margin is thin
 
 server:
   sse_host: 127.0.0.1 # SSE bind address; UNAUTHENTICATED — use 0.0.0.0 only to expose deliberately
@@ -418,7 +427,11 @@ All settings can be overridden at runtime without editing the YAML file:
 | `MNEMODOC_INDEX_CONCURRENCY` | `index.concurrency` |
 | `MNEMODOC_INDEX_PDF` | `index.pdf` |
 | `MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES` | `chunking.strip_link_only_lines` |
+| `MNEMODOC_INDEX_MAX_FILE_SIZE` | `index.max_file_size` |
 | `MNEMODOC_CHUNKING_MERGE_PREAMBLE` | `chunking.merge_preamble_into_first_section` |
+| `MNEMODOC_HOOK_THRESHOLD` | `hook.similarity_threshold` |
+| `MNEMODOC_HOOK_MARGIN` | `hook.margin_threshold` |
+| `MNEMODOC_HOOK_MAX_PASSAGES` | `hook.max_passages` |
 | `MNEMODOC_EXCLUDE` | `exclude` (comma-separated patterns) |
 
 ## Claude Code integration
