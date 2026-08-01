@@ -16,8 +16,17 @@ import sys
 from pathlib import Path
 
 
+# The formula declares no `version`: Homebrew scans it from the release tag in
+# the download URLs. Declaring it as well makes `brew audit --strict` fail with
+# "version is redundant with version scanned from URL", so the version lives in
+# the URLs only and is rewritten there.
 def replace_version(content: str, version: str) -> str:
-    return re.sub(r'version "\S+"', f'version "{version}"', content)
+    pattern = re.compile(r'(/releases/download/v)[^/"]+(/)')
+    result, n = pattern.subn(rf"\g<1>{version}\g<2>", content)
+    if n == 0:
+        print("ERROR: no release download URL found to bump", file=sys.stderr)
+        sys.exit(1)
+    return result
 
 
 def replace_sha(content: str, platform: str, sha: str) -> str:
