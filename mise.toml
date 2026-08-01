@@ -1,13 +1,6 @@
 [tools]
 crystal = "1.20.3"
 
-# Local, git-ignored secrets — currently ANTHROPIC_API_KEY, which switches the
-# token benchmark from its character-count approximation to exact counts via the
-# count_tokens endpoint. A missing .env is not an error: every task still runs,
-# the variable is simply unset.
-[env]
-_.file = ".env"
-
 [vars]
 APP_NAME    = "mnemodoc-server"
 SOURCE_FILE = "src/{{vars.APP_NAME}}.cr"
