@@ -120,6 +120,7 @@ src/mnemodoc_server/
       fictionbook.cr               FictionBook .fb2 (via nested_xml)
   store/
     sqlite.cr                      SQLite store (WAL) — files/chunks/meta/documents/outline, embeddings as blobs, vec0 KNN, write mutex
+    usage.cr                       Store::Usage — the journal's insert, purge and four views
     sqlite_vec.cr                  LibVec binding to the ext/sqlite-vec submodule (vec0), registered per connection
     qdrant_index.cr                Best-effort QdrantIndex over qdrant-client (opt-in semantic backend; replaces vec0 when search.backend=qdrant)
   search/
@@ -145,6 +146,11 @@ src/mnemodoc_server/
     document_access.cr             Shared path resolution + document loading + staleness for the two reading tools
     outline.cr                     outline_document MCP tool
     read.cr                        read_document MCP tool
+  usage/
+    event.cr                       UsageEvent struct + the two file-extraction rules
+    recorder.cr                    Builds an event from a ToolResult or explicit fields; never raises
+    transport.cr                   Socket send (100 ms, fire-and-forget) with spool fallback
+    collector.cr                   Daemon side: socket listener, spool import, retention purge
 ```
 
 ### Project resolution and the `.mnemodoc/` marker
@@ -208,7 +214,7 @@ the same standing approval without anyone deciding to.
 
 ### Machine-readable CLI output
 
-Every subcommand that returns a result accepts `--json` (one JSON object on stdout) — `index`, `search`, `outline`, `read`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not. Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`).
+Every subcommand that returns a result accepts `--json` (one JSON object on stdout) — `index`, `search`, `outline`, `read`, `usage`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not. Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`).
 
 **Payloads evolve additively** — fields may be added, never removed or renamed. There is deliberately no schema version field.
 
@@ -284,6 +290,75 @@ read-only tool and asserts each one appears. It runs the binary as a subprocess
 deliberately — `@@log_file` and `@@logger` are memoised process-wide and only
 `reopen_log_file!` resets them, so an in-process example cannot redirect the log
 once another spec has opened it.
+
+### The usage journal
+
+`usage_events` and `usage_event_files` record everything that serves a document,
+and `mnemodoc-server usage` reads them back. The point is the questions text
+lines cannot answer: which documents are served, which never are, which calls
+come back empty. Those are joins.
+
+**The prompt hook is in scope, and that decides the architecture.** It is by far
+the largest supplier of served passages — a measured session showed 1 539
+`UserPromptSubmit` against a handful of tool calls — so a journal without it
+would invert the picture it exists to give. But it runs synchronously before
+every user message under a standing "fail silently, exit 0" rule, which is why
+the send is bounded and fire-and-forget rather than a write.
+
+**Why a second socket rather than the daemon's own.** Both of the `mcp` shard's
+routing layers are closed: `MCP::Transport::Http#handle` matches `POST /mcp` and
+`GET /health` and 404s the rest, and `MCP::Handler#handle` answers "Method not
+found" outside its `case`. Reusing that socket would mean changing an external
+repository. `usage.sock` keeps the work here, and a line-oriented protocol costs
+far less than an HTTP POST against a 100 ms budget.
+
+**What the timeouts do and do not bound.** `SEND_TIMEOUT` (100 ms) bounds the
+write; an absent daemon fails at once. It does not bound `connect`, which can
+block if the accept backlog saturates — the daemon closes each connection as
+soon as it has the line, which is the mitigation. On any failure the producer
+appends to `usage.jsonl`, and the daemon imports it: rename, wait
+`IMPORT_GRACE` (200 ms), read, insert, delete. A line written into the old inode
+after the read is lost; that window is deliberate, and the alternative — a
+shared `flock` taken before every user message — is the blocking this design
+exists to avoid.
+
+**`usage` drains the spool itself before reporting**, which the design did not
+foresee: only the daemon imported it, so a project used from the CLI alone — or
+running with `server.daemon: false` — reported zeros forever while the file kept
+growing. The rename inside `import_spool` makes the two importers safe together:
+whoever renames first takes the batch, the other finds nothing.
+
+**`usage_event_files` has no foreign key to `files`, on purpose.** A document
+removed from the index must leave its history behind: "this document stopped
+being served" only means something if the trace outlives the file. The only
+cascade is internal, from an event's files to the event, which is what makes
+retention one `DELETE`.
+
+**Recording can never break the call it observes.** Every failure in the
+recorder or its transport is swallowed and logged at `debug`;
+`Transport.send` reports `:dropped` rather than raising.
+`spec/usage_recording_spec.cr` proves it by making the spool unwritable and
+asserting the tool still answers.
+
+**Two figures that must mean one thing on both surfaces.** `files_from`
+deduplicates, because several passages routinely come from one document —
+recording it once per passage made "served N times" count passages through MCP
+and calls through the CLI, so two calls on one document reported six. And
+`result_count` comes from `result_count_from`, i.e. from what the payload
+returned, not from how many documents it touched, so a search recorded through
+either surface reports the same number.
+
+**`misses` is restricted to `Store::Usage::SEARCHING_ACTIONS`** —
+`query_documents` and `prompt_hook`. `status`, `list_files`, `delete_file` and
+`get_project_context` serve no document by nature and record a zero count;
+without the filter, the one view meant to reveal gaps in the corpus filled with
+calls that were never searching, and an agent calls `status` routinely.
+
+**Silence is data.** A `result_count` of zero from the hook means the similarity
+gate decided not to inject, and `usage` reports it as the silence rate.
+Ollama being unreachable is *not* recorded as silence: the hook raises before it
+reaches a decision, and conflating an outage with a decision would corrupt the
+one figure this view exists for.
 
 ### Role selection on a weak signal
 
@@ -553,6 +628,8 @@ Key spec files:
 - `spec/backfill_documents_spec.cr` — rebuild without Ollama, embeddings preserved
 - `spec/cli_document_spec.cr` — `outline` / `read` subcommands end to end
 - `spec/tool_audit_log_spec.cr` — every tool call visible at the default log level
+- `spec/usage_*_spec.cr` — the journal: event, transport, store, recording, collector
+- `spec/cli_usage_spec.cr` — the `usage` subcommand and its four views
 - `spec/project_discovery_spec.cr` — marker walk-up, anchoring, no index dir without a project
 - `spec/uninitialized_project_spec.cr` — every tool short-circuits with the `init` invitation
 - `spec/cli_init_spec.cr` — `init` / `uninit` end to end (marker, path detection, --force)

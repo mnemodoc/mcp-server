@@ -43,6 +43,7 @@ module MnemodocServer
     private def run_internal(ready_channel : Channel(Nil)?) : Nil
       store : Store::SQLite? = nil        # ameba:disable Lint/UselessAssign
       embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
+      collector : Usage::Collector? = nil
 
       # Opening the store also prepares the index directory (= the socket's
       # parent), which MCP::Http needs to exist before it can bind.
@@ -72,6 +73,22 @@ module MnemodocServer
         spawn { MnemodocServer.watch_and_index(@config, active_store, qi, sf: single_flight) }
       end
 
+      # The usage journal's own socket, beside the MCP one. Producers that
+      # cannot reach it spool to a file, which this same collector drains: the
+      # import runs first so a restart picks up whatever was recorded while no
+      # daemon was listening, then the retention sweep, then both on a timer.
+      if @config.usage.enabled?
+        active_collector = collector = Usage::Collector.new(@config, active_store)
+        spawn { active_collector.listen }
+        spawn do
+          loop do
+            active_collector.import_spool
+            active_collector.purge_expired
+            sleep @config.usage.import_interval.seconds
+          end
+        end
+      end
+
       t = MCP::Http.new(
         server,
         socket_path: @config.daemon_socket_path,
@@ -95,6 +112,10 @@ module MnemodocServer
       # Best-effort: a hard kill leaves the file behind, which is why callers
       # probe /health before trusting the pid it contains.
       File.delete?(@config.daemon_pid_path)
+      # Stopped explicitly rather than left to the process exit: the listener
+      # removes its socket as it unwinds, and a fiber killed with the process
+      # never unwinds. Symmetrical with the pid file above.
+      collector.try(&.stop)
       embedder.try(&.close)
       store.try(&.close)
     end

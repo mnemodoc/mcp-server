@@ -230,6 +230,7 @@ mnemodoc-server index <path>                                               # Ind
 mnemodoc-server search "<query>" [--mode hybrid|semantic|keyword] [--top 5] # Test search from terminal
 mnemodoc-server outline <path>                                             # A document's heading plan
 mnemodoc-server read <path> [--offset 1] [--limit 200]                     # Numbered lines, served from the index
+mnemodoc-server usage [--days N] [--documents|--unused|--misses]           # How the documentation is being used
 mnemodoc-server status                                                     # Index stats
 mnemodoc-server delete <path>                                              # Remove from index
 mnemodoc-server context [--files <path>]... [--task <kind>] [--query "<text>"] # Resolve & print the role to adopt
@@ -287,7 +288,7 @@ tuned only on real questions never sees.
 
 ### Machine-readable output
 
-Every subcommand that returns a result accepts `--json` — `index`, `search`, `outline`, `read`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not: one streams a protocol, the other writes a passage for a client hook to consume verbatim., emitting its result as a single JSON object on stdout:
+Every subcommand that returns a result accepts `--json` — `index`, `search`, `outline`, `read`, `usage`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not: one streams a protocol, the other writes a passage for a client hook to consume verbatim., emitting its result as a single JSON object on stdout:
 
 ```sh
 $ mnemodoc-server status --json
@@ -414,11 +415,54 @@ It gates on **cosine similarity**, not on the fused search score — the latter 
 
 Every failure path is silent and exits 0 by design: this runs synchronously in front of the user, and a hook that errors on an unrelated turn is worse than one that says nothing.
 
+### The usage journal
+
+`mnemodoc-server usage` answers what the server log can show but not answer:
+which documents are actually served, which have never been served, and which
+questions come back empty. Those are joins, not greps.
+
+```bash
+mnemodoc-server usage                      # calls, documents served, hook silence rate
+mnemodoc-server usage --documents          # most served first
+mnemodoc-server usage --unused             # indexed and never served in the window
+mnemodoc-server usage --misses             # searches that returned nothing, with the question
+```
+
+`--misses` covers the calls that actually went looking — searches and hook
+injections. `status` and `list_files` serve no document by design, so they are
+not gaps in the corpus and do not appear there.
+
+Everything that serves a document is recorded: MCP tool calls, the equivalent
+CLI subcommands, and the prompt hook — including the times the hook chose to
+stay **silent**, which is a figure no other source reports. `--unused` separates
+documents that were present for the whole window from those indexed too
+recently to judge, so a document added yesterday never reads as dead weight.
+
+**The journal stores the full text of queries and prompts.** It lives in
+`.mnemodoc/`, which carries a self-ignoring `.gitignore`, so it cannot be
+committed by accident; entries older than `usage.retention_days` (default 90)
+are purged by the daemon. Set `usage.enabled: false` to stop recording — that
+turns collection off without erasing what was already collected, and `usage`
+keeps answering from it.
+
+Recording never blocks and never fails a call. Producers send one JSON line to a
+dedicated socket the daemon listens on, with a 100 ms budget and no reply
+awaited; when no daemon answers — `usage.enabled` aside, `server.daemon: false`
+is a supported configuration — the line is appended to `usage.jsonl` and the
+daemon imports it later.
+
+```yaml
+usage:
+  enabled: true          # record tool, CLI and hook calls
+  retention_days: 90     # sliding window
+  import_interval: 60    # seconds between two imports of the fallback file
+```
+
 `mnemodoc-server info --licenses` prints the third-party licence texts baked into the binary — the notices its statically linked dependencies require when the binary is redistributed on its own.
 
 ### Environment overrides
 
-Every setting can be overridden without editing the YAML, which is what makes a systemd unit or a container image configurable: `MNEMODOC_OLLAMA_HOST`, `MNEMODOC_OLLAMA_MODEL`, `MNEMODOC_OLLAMA_TIMEOUT`, `MNEMODOC_OLLAMA_BATCH_SIZE`, `MNEMODOC_SEARCH_TOP_K`, `MNEMODOC_SEARCH_MODE`, `MNEMODOC_SEARCH_BACKEND`, `MNEMODOC_SEARCH_RECENCY_DAYS`, `MNEMODOC_SEARCH_RECENCY_BOOST`, `MNEMODOC_SEARCH_KEYWORD_WEIGHT`, `MNEMODOC_QDRANT_URL`, `MNEMODOC_QDRANT_API_KEY`, `MNEMODOC_QDRANT_COLLECTION`, `MNEMODOC_HOOK_THRESHOLD`, `MNEMODOC_HOOK_MARGIN`, `MNEMODOC_HOOK_MAX_PASSAGES`, `MNEMODOC_SERVER_SSE_HOST`, `MNEMODOC_SERVER_SSE_PORT`, `MNEMODOC_SERVER_LOG_FILE`, `MNEMODOC_SERVER_LOG_LEVEL`, `MNEMODOC_SERVER_DAEMON`, `MNEMODOC_SERVER_IDLE_TIMEOUT`, `MNEMODOC_SERVER_DAEMON_WATCH`, `MNEMODOC_SERVER_WATCH_INTERVAL`, `MNEMODOC_DB_PATH`, `MNEMODOC_INDEX_CONCURRENCY`, `MNEMODOC_INDEX_PDF`, `MNEMODOC_INDEX_MAX_FILE_SIZE`, `MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES`, `MNEMODOC_CHUNKING_MERGE_PREAMBLE`, `MNEMODOC_EXCLUDE`.
+Every setting can be overridden without editing the YAML, which is what makes a systemd unit or a container image configurable: `MNEMODOC_OLLAMA_HOST`, `MNEMODOC_OLLAMA_MODEL`, `MNEMODOC_OLLAMA_TIMEOUT`, `MNEMODOC_OLLAMA_BATCH_SIZE`, `MNEMODOC_SEARCH_TOP_K`, `MNEMODOC_SEARCH_MODE`, `MNEMODOC_SEARCH_BACKEND`, `MNEMODOC_SEARCH_RECENCY_DAYS`, `MNEMODOC_SEARCH_RECENCY_BOOST`, `MNEMODOC_SEARCH_KEYWORD_WEIGHT`, `MNEMODOC_QDRANT_URL`, `MNEMODOC_QDRANT_API_KEY`, `MNEMODOC_QDRANT_COLLECTION`, `MNEMODOC_HOOK_THRESHOLD`, `MNEMODOC_HOOK_MARGIN`, `MNEMODOC_HOOK_MAX_PASSAGES`, `MNEMODOC_SERVER_SSE_HOST`, `MNEMODOC_SERVER_SSE_PORT`, `MNEMODOC_SERVER_LOG_FILE`, `MNEMODOC_SERVER_LOG_LEVEL`, `MNEMODOC_SERVER_DAEMON`, `MNEMODOC_SERVER_IDLE_TIMEOUT`, `MNEMODOC_SERVER_DAEMON_WATCH`, `MNEMODOC_SERVER_WATCH_INTERVAL`, `MNEMODOC_DB_PATH`, `MNEMODOC_INDEX_CONCURRENCY`, `MNEMODOC_INDEX_PDF`, `MNEMODOC_INDEX_MAX_FILE_SIZE`, `MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES`, `MNEMODOC_CHUNKING_MERGE_PREAMBLE`, `MNEMODOC_EXCLUDE`, `MNEMODOC_USAGE_ENABLED`, `MNEMODOC_USAGE_RETENTION_DAYS`, `MNEMODOC_USAGE_IMPORT_INTERVAL`.
 
 Booleans accept `true/1/yes/on` in any case. A value that cannot be read — a non-numeric count, an unrecognised boolean — is reported by the startup validation alongside every other configuration problem, and the previous value is kept rather than silently replaced by zero.
 

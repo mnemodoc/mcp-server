@@ -149,6 +149,26 @@ module MnemodocServer
     property max_passages : Int32 = 3
   end
 
+  # Usage journal settings. Recording is on by default: a journal nobody
+  # enables collects nothing, and the index directory ignores itself, so the
+  # events cannot reach a repository by accident.
+  class UsageConfig
+    include YAML::Serializable
+
+    # false stops every producer from building an event at all — no socket
+    # connection, no spool write. It does not purge what was already collected:
+    # turning the journal off is not the same statement as erasing its history,
+    # and `usage` keeps answering from what came before.
+    property? enabled : Bool = true
+
+    # Sliding window, in days. Events older than this are purged at daemon
+    # startup and after each import.
+    property retention_days : Int32 = 90
+
+    # Seconds between two imports of the spool file into SQLite.
+    property import_interval : Int32 = 60
+  end
+
   class ContextConfig
     include YAML::Serializable
 
@@ -207,6 +227,7 @@ module MnemodocServer
     property context : ContextConfig = ContextConfig.from_yaml("")
     property hook : HookConfig = HookConfig.from_yaml("")
     property qdrant : QdrantConfig = QdrantConfig.from_yaml("")
+    property usage : UsageConfig = UsageConfig.from_yaml("")
 
     # Environment overrides that could not be read, collected here instead of
     # raising on the spot so validate! can report them with everything else.
@@ -285,6 +306,9 @@ module MnemodocServer
       env_bool(env, "MNEMODOC_CHUNKING_STRIP_LINK_ONLY_LINES") { |v| @chunking.strip_link_only_lines = v }
       env_bool(env, "MNEMODOC_CHUNKING_MERGE_PREAMBLE") { |v| @chunking.merge_preamble_into_first_section = v }
       env["MNEMODOC_EXCLUDE"]?.try { |v| @exclude = v.split(',').map(&.strip).reject(&.empty?) }
+      env_bool(env, "MNEMODOC_USAGE_ENABLED") { |v| @usage.enabled = v }
+      env_int(env, "MNEMODOC_USAGE_RETENTION_DAYS") { |v| @usage.retention_days = v }
+      env_int(env, "MNEMODOC_USAGE_IMPORT_INTERVAL") { |v| @usage.import_interval = v }
     end
 
     # Raises ArgumentError listing every validation problem at once.
@@ -352,6 +376,18 @@ module MnemodocServer
       File.join(File.dirname(db_path), "daemon.pid")
     end
 
+    # Socket the daemon listens on for usage events. Beside the index DB, like
+    # the daemon's own socket, so it is scoped to the same project.
+    def usage_socket_path : String
+      File.join(File.dirname(db_path), "usage.sock")
+    end
+
+    # Spool file holding events written while no daemon answered. Beside the
+    # index DB, so the directory's self-ignoring .gitignore covers it.
+    def usage_spool_path : String
+      File.join(File.dirname(db_path), "usage.jsonl")
+    end
+
     # Default per-project database: `.mnemodoc/index.db` beside the config file.
     # Two projects sharing a basename stay isolated by construction, since the
     # location IS the project rather than a hash of its path.
@@ -395,6 +431,8 @@ module MnemodocServer
       errors << "server.sse_port must be 1-65535" unless @server.sse_port.in?(1..65535)
       errors << "server.daemon_idle_timeout must be >= 1" unless @server.daemon_idle_timeout >= 1
       errors << "server.daemon_watch_interval must be >= 1" unless @server.daemon_watch_interval >= 1
+      errors << "usage.retention_days must be >= 1" unless @usage.retention_days >= 1
+      errors << "usage.import_interval must be >= 1" unless @usage.import_interval >= 1
       errors << "hook.similarity_threshold must be between 0 and 1" unless (0.0..1.0).includes?(@hook.similarity_threshold)
       errors << "hook.margin_threshold must be between 0 and 1" unless (0.0..1.0).includes?(@hook.margin_threshold)
       errors << "hook.max_passages must be >= 1" unless @hook.max_passages >= 1

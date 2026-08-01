@@ -611,4 +611,46 @@ Spectator.describe MnemodocServer::Config do
       expect(config.db_path).to eq("/var/tmp/proj~backup/index.db")
     end
   end
+
+  describe "usage section" do
+    it "defaults to enabled with a ninety-day window" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - docs/\n")
+      expect(config.usage.enabled?).to be_true
+      expect(config.usage.retention_days).to eq(90)
+      expect(config.usage.import_interval).to eq(60)
+    end
+
+    it "reads the section from YAML" do
+      config = MnemodocServer::Config.from_yaml(
+        "paths:\n  - docs/\nusage:\n  enabled: false\n  retention_days: 30\n  import_interval: 5\n")
+      expect(config.usage.enabled?).to be_false
+      expect(config.usage.retention_days).to eq(30)
+      expect(config.usage.import_interval).to eq(5)
+    end
+
+    it "applies the environment overrides" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - docs/\n")
+      config.apply_env!({"MNEMODOC_USAGE_ENABLED" => "false", "MNEMODOC_USAGE_RETENTION_DAYS" => "7"})
+      expect(config.usage.enabled?).to be_false
+      expect(config.usage.retention_days).to eq(7)
+    end
+
+    it "puts the socket and spool beside the index" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - docs/\ndb:\n  path: /tmp/x/index.db\n")
+      expect(config.usage_socket_path).to eq("/tmp/x/usage.sock")
+      expect(config.usage_spool_path).to eq("/tmp/x/usage.jsonl")
+    end
+
+    # A window of zero or less would purge everything the moment it is written,
+    # which is a configuration mistake worth naming rather than a valid choice.
+    it "rejects a non-positive retention window" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - docs/\nusage:\n  retention_days: 0\n")
+      expect { config.validate! }.to raise_error(ArgumentError, /retention_days/)
+    end
+
+    it "rejects a non-positive import interval" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - docs/\nusage:\n  import_interval: 0\n")
+      expect { config.validate! }.to raise_error(ArgumentError, /import_interval/)
+    end
+  end
 end

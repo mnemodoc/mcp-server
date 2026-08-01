@@ -515,6 +515,12 @@ module MnemodocServer
         # Diagnostic trace for tuning relevance; off at the default info level.
         Log.debug { "query=#{arguments.query.inspect} mode=#{flags.mode} top_k=#{flags.top} → #{results.size} results" }
 
+        # Not deduplicated here: the recorder does it for every caller, which is
+        # what keeps this surface and the MCP one reporting the same figure.
+        Usage::Recorder.record(config, source: "cli", action: "query_documents",
+          query: arguments.query, result_count: results.size, elapsed_ms: nil,
+          files: results.map(&.chunk.file_path))
+
         payload = {
           query: arguments.query,
           mode:  flags.mode,
@@ -658,6 +664,8 @@ module MnemodocServer
         result = Tools::Outline.new(opened).call(
           {"path" => JSON::Any.new(arguments.path)} of String => JSON::Any
         )
+        Usage::Recorder.record_tool(config, source: "cli", action: "outline_document",
+          result: result, query: nil, elapsed_ms: nil)
         payload = result.structured_content || JSON::Any.new({} of String => JSON::Any)
 
         emit(payload, json: flags.json, quiet: false) do
@@ -704,6 +712,8 @@ module MnemodocServer
           "offset" => JSON::Any.new(flags.offset.to_i64),
           "limit"  => JSON::Any.new(flags.limit.to_i64),
         } of String => JSON::Any)
+        Usage::Recorder.record_tool(config, source: "cli", action: "read_document",
+          result: result, query: nil, elapsed_ms: nil)
         payload = result.structured_content || JSON::Any.new({} of String => JSON::Any)
 
         emit(payload, json: flags.json, quiet: false) do
@@ -716,6 +726,108 @@ module MnemodocServer
         handle_error(ex, json: flags.json)
       ensure
         store.try(&.close)
+      end
+    end
+
+    # Reads the usage journal back: how the documentation is actually being
+    # used, which the server log can show but not answer, since "which documents
+    # never served" is a join rather than a grep.
+    #
+    # Four views, one at a time. Merging them would leave the payload with no
+    # stable schema, so passing more than one is refused rather than combined.
+    class UsageCommand < Admiral::Command
+      include CLIErrorHandling
+      include CLIOutput
+      define_help description: "Report how the documentation is being used"
+
+      define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
+      # ameba:disable Lint/UselessAssign
+      define_flag json : Bool, long: "json", default: false, description: "Emit the report as JSON"
+      define_flag days : Int32, long: "days", default: 0, description: "Window in days (default: usage.retention_days)"
+      # ameba:disable Lint/UselessAssign
+      define_flag documents : Bool, long: "documents", default: false, description: "Per document, most served first"
+      # ameba:disable Lint/UselessAssign
+      define_flag unused : Bool, long: "unused", default: false, description: "Indexed documents never served in the window"
+      # ameba:disable Lint/UselessAssign
+      define_flag misses : Bool, long: "misses", default: false, description: "Calls that returned nothing"
+
+      def run
+        store : Store::SQLite? = nil
+        MnemodocServer.init_app!(flags.config)
+        config = MnemodocServer.config
+
+        selected = [flags.documents, flags.unused, flags.misses].count(true)
+        raise ArgumentError.new("pass at most one view: --documents, --unused or --misses") if selected > 1
+
+        opened = store = MnemodocServer.open_store(config)
+        # Drains the spool first. Only the daemon imports it otherwise, so a
+        # project used from the CLI alone — or running with server.daemon:
+        # false — would report zeros forever while the file kept growing. The
+        # rename inside import_spool makes this safe against a daemon importing
+        # at the same moment: whoever renames first takes the batch.
+        Usage::Collector.new(config, opened).import_spool
+        days = flags.days > 0 ? flags.days : config.usage.retention_days
+        since = Time.utc.to_unix - (days.to_i64 * 86_400)
+
+        if flags.documents
+          emit_documents(opened, since, days)
+        elsif flags.unused
+          emit_unused(opened, since, days)
+        elsif flags.misses
+          emit_misses(opened, since, days)
+        else
+          emit_summary(opened, since, days)
+        end
+      rescue ex : ArgumentError
+        handle_error(ex, json: flags.json)
+      ensure
+        store.try(&.close)
+      end
+
+      private def emit_summary(store : Store::SQLite, since : Int64, days : Int32) : Nil
+        summary = store.usage.summary(since)
+        payload = {days: days, events: summary[:events], documents: summary[:documents],
+                   silent_hooks: summary[:silent_hooks],
+                   by_source: summary[:by_source], by_action: summary[:by_action]}
+        emit(payload, json: flags.json, quiet: false) do
+          puts "Window: #{days} days"
+          puts "Calls: #{summary[:events]}"
+          puts "Documents served: #{summary[:documents]}"
+          puts "Hook stayed silent: #{summary[:silent_hooks]} time(s)"
+          summary[:by_action].each { |action, count| puts "  #{action}: #{count}" }
+        end
+      end
+
+      private def emit_documents(store : Store::SQLite, since : Int64, days : Int32) : Nil
+        rows = store.usage.documents(since)
+        payload = {days: days, documents: rows.map { |row|
+          {path: row[:path], served: row[:served], last_at: row[:last_at]}
+        }}
+        emit(payload, json: flags.json, quiet: false) do
+          rows.each { |row| puts "#{row[:served]}\t#{row[:path]}" }
+        end
+      end
+
+      private def emit_unused(store : Store::SQLite, since : Int64, days : Int32) : Nil
+        verdict = store.usage.unused(since)
+        payload = {days: days, unused: verdict[:unused], too_recent: verdict[:too_recent]}
+        emit(payload, json: flags.json, quiet: false) do
+          verdict[:unused].each { |path| puts path }
+          unless verdict[:too_recent].empty?
+            puts "(indexed less than #{days} days ago, too recent to judge:)"
+            verdict[:too_recent].each { |path| puts "  #{path}" }
+          end
+        end
+      end
+
+      private def emit_misses(store : Store::SQLite, since : Int64, days : Int32) : Nil
+        rows = store.usage.misses(since)
+        payload = {days: days, misses: rows.map { |row|
+          {at: row[:at], source: row[:source], action: row[:action], query: row[:query]}
+        }}
+        emit(payload, json: flags.json, quiet: false) do
+          rows.each { |row| puts "#{row[:source]}\t#{row[:action]}\t#{row[:query]}" }
+        end
       end
     end
 
@@ -766,6 +878,15 @@ module MnemodocServer
           similarity_threshold: config.hook.similarity_threshold,
           margin_threshold: config.hook.margin_threshold,
           max_passages: config.hook.max_passages)
+
+        # Recorded before the early return, deliberately: a hook that chose to
+        # stay silent is the event the usage summary reports as the silence
+        # rate, and returning first would make it unobservable.
+        Usage::Recorder.record(config, source: "hook", action: "prompt_hook",
+          query: prompt, result_count: chosen.size, elapsed_ms: nil,
+          files: chosen.map(&.chunk.file_path),
+          session: hook.session_id, agent: hook.agent_label.presence)
+
         return if chosen.empty?
 
         Log.for("mnemodoc-server.prompt-hook").info {
@@ -1089,6 +1210,7 @@ module MnemodocServer
     register_sub_command search, Search, description: "Search the index"
     register_sub_command outline, Outline, description: "Print a document's heading plan"
     register_sub_command read, Read, description: "Print numbered lines of a document"
+    register_sub_command usage, UsageCommand, description: "Report how the documentation is being used"
     register_sub_command status, Status, description: "Show index status"
     register_sub_command delete, Delete, description: "Remove a file from the index"
     register_sub_command context, Context, description: "Select and print the role for the current context"

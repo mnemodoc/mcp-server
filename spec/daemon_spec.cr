@@ -129,6 +129,26 @@ Spectator.describe MnemodocServer::Daemon do
     end
   end
 
+  # The pid file was cleaned up on shutdown and the usage socket was not: the
+  # collector's own fiber never unwound, so a stopped daemon left the file
+  # behind. Inert, and removed at the next bind, but the asymmetry hid a
+  # collector that was never told to stop.
+  describe "#run (usage socket)" do
+    it "binds the usage socket and removes it on shutdown" do
+      daemon = start_daemon(config)
+      usage_path = config.usage_socket_path
+
+      begin
+        expect(File.exists?(usage_path)).to be_true
+      ensure
+        daemon.stop
+        sleep 200.milliseconds
+      end
+
+      expect(File.exists?(usage_path)).to be_false
+    end
+  end
+
   describe "#run (idle shutdown)" do
     it "stops and removes the socket file after daemon_idle_timeout seconds" do
       daemon = start_daemon(idle_config)

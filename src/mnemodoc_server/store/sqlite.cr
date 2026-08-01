@@ -15,6 +15,7 @@ module MnemodocServer
       @write_mutex = Mutex.new
       @count_mutex = Mutex.new
       @chunk_count : Int64? = nil
+      @usage : Usage? = nil
 
       # Five tables: `files` tracks indexed paths and their mtime for change
       # detection; `chunks` holds the embedded sections, cascade-deleted when
@@ -26,6 +27,12 @@ module MnemodocServer
       # `verbatim` telling the file itself apart from a handler's extraction; and
       # `outline` holds its heading plan. Both cascade with their file, like
       # `chunks`, so removal needs no extra cleanup path.
+      #
+      # `usage_events` and `usage_event_files` are the usage journal. The second
+      # deliberately has NO foreign key to `files`: a document removed from the
+      # index must leave its history behind, since "this document stopped being
+      # served" only means something if the trace outlives the file. The only
+      # cascade here is internal, from the files of an event to the event.
       SCHEMA = <<-SQL
         CREATE TABLE IF NOT EXISTS files (
           path       TEXT    PRIMARY KEY,
@@ -75,7 +82,29 @@ module MnemodocServer
           start_line INTEGER NOT NULL
         );
 
-        CREATE INDEX IF NOT EXISTS idx_outline_file ON outline(file_path)
+        CREATE INDEX IF NOT EXISTS idx_outline_file ON outline(file_path);
+
+        CREATE TABLE IF NOT EXISTS usage_events (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          at           INTEGER NOT NULL,
+          source       TEXT    NOT NULL,
+          action       TEXT    NOT NULL,
+          query        TEXT,
+          result_count INTEGER NOT NULL DEFAULT 0,
+          elapsed_ms   INTEGER,
+          session      TEXT,
+          agent        TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_usage_at ON usage_events(at);
+
+        CREATE TABLE IF NOT EXISTS usage_event_files (
+          event_id  INTEGER NOT NULL REFERENCES usage_events(id) ON DELETE CASCADE,
+          file_path TEXT    NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_usage_files_path  ON usage_event_files(file_path);
+        CREATE INDEX IF NOT EXISTS idx_usage_files_event ON usage_event_files(event_id)
       SQL
 
       # vec0: when false (the qdrant backend), the vec_chunks virtual table is
@@ -109,6 +138,14 @@ module MnemodocServer
 
       def close : Nil
         @db.close
+      end
+
+      # The usage journal's queries, kept out of this class: they have nothing
+      # to do with indexing, and this file is large enough already. Shares this
+      # store's connection and write mutex, so a journal write can never race an
+      # index write inside the daemon.
+      def usage : Usage
+        @usage ||= Usage.new(@db, @write_mutex)
       end
 
       # Returns the active SQLite journal mode (expected "wal"); used in tests.
