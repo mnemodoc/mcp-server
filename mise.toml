@@ -54,6 +54,13 @@ run = "crystal spec {{vars.SPEC_OPTS}}"
 
 [tasks."dev:docs"]
 description = "Generate project documentation"
+# Same trap as dev:spec below, and it bit for the same reason: `crystal doc`
+# runs the macros, so baked_file_system reads licenses/ at that point. The
+# folder is generated, and CI runs this task standalone after a bare checkout —
+# it never existed there. Locally it always does, which is why the job was the
+# first thing to find it. No dev:vec0-objects: doc analyses, it does not link,
+# so the @[Link] objects are not needed (verified).
+depends = ["dev:licenses"]
 run = "rm -rf docs && crystal doc"
 
 # ameba can spin at 100% CPU indefinitely on some inputs, so the task carries its
