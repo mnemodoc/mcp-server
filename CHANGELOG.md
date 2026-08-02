@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A truncated pipe answered with a stack trace.** `mnemodoc-server info |
+  head -1`, or quitting `| less` halfway, printed a full `IO::Error (Broken
+  pipe)` backtrace on stderr and exited non-zero. Crystal's runtime ignores
+  SIGPIPE, so the write comes back `EPIPE` and raises rather than killing the
+  process, and the entry point's catch-all treated that like any other crash.
+  A reader walking away is not a failure of this program: the process now exits
+  0 in silence, matched on the errno rather than on a message. Every other
+  exception keeps its backtrace
 - **The `PreToolUse` role injection never reached the model.** `context
   --hook-stdin` printed the role markdown on raw stdout for every event, but a
   `PreToolUse` hook's stdout is sent to the client's debug journal and dropped —
