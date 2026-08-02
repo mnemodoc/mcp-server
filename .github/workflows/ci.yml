@@ -177,12 +177,14 @@ jobs:
           persist-credentials: false
           submodules: recursive
 
-      # Verified on the image, not assumed: it is a bare Ubuntu 24.04 with no
-      # curl and no ca-certificates for mise-action to fetch mise with, and no
-      # envsubst, which dev:vec0-objects needs to generate sqlite-vec.h. cc,
-      # gcc, make, git and shards are already there.
+      # Verified on the image, not assumed: it is a bare Ubuntu 24.04. It has
+      # cc, gcc, make, git and shards, and lacks all four of these — curl and
+      # ca-certificates, without which mise-action cannot fetch mise; envsubst,
+      # which dev:vec0-objects needs to generate sqlite-vec.h; and sqlite3.h,
+      # against which the same task compiles it. The whole chain was replayed
+      # in the container with these four installed: 677 examples, 0 failures.
       - name: Provision the container
-        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gettext-base
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gettext-base libsqlite3-dev
 
       - name: Setup mise
         uses: jdx/mise-action@v4
@@ -211,6 +213,16 @@ jobs:
       - name: Setup mise
         uses: jdx/mise-action@v4
 
+      # macOS ships no `timeout`, which the mise tasks use to bound anything
+      # that can spin forever (ameba, the multi-threaded spec run). The tasks
+      # are written in GNU syntax on purpose; gnubin puts the GNU names first
+      # so they need no macOS branch. `brew --prefix` covers both arm64
+      # (/opt/homebrew) and Intel (/usr/local).
+      - name: Install GNU coreutils
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+
       # TODO: remove me when https://github.com/crystal-lang/crystal/issues/16746 is fixed
       - name: Fix Crystal shards
         run: mise dev:fix-shards-command
@@ -235,6 +247,16 @@ jobs:
 
       - name: Setup mise
         uses: jdx/mise-action@v4
+
+      # macOS ships no `timeout`, which the mise tasks use to bound anything
+      # that can spin forever (ameba, the multi-threaded spec run). The tasks
+      # are written in GNU syntax on purpose; gnubin puts the GNU names first
+      # so they need no macOS branch. `brew --prefix` covers both arm64
+      # (/opt/homebrew) and Intel (/usr/local).
+      - name: Install GNU coreutils
+        run: |
+          brew install coreutils
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
 
       # TODO: remove me when https://github.com/crystal-lang/crystal/issues/16746 is fixed
       - name: Fix Crystal shards
