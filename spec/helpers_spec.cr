@@ -43,8 +43,37 @@ Spectator.describe "MnemodocServer helpers" do
   # it has to be legible even when built outside a git checkout — a source
   # tarball, for one, where the git ref simply is not there to be had.
   describe ".version" do
+    # The tarball case: with no repository to ask, every field still says
+    # something ("unknown"), so the string never degrades to "1.0.0 ()".
     it "never reports an empty provenance" do
-      expect(MnemodocServer.version).to match(/\S+ \(\S+\)/)
+      expect(MnemodocServer.version).to match(/\A\S+ \(\S(?:.*\S)?\)\z/)
+      expect(MnemodocServer.commit).not_to be_empty
+    end
+
+    # The platform is what tells a wrongly pulled arm64 image from the amd64
+    # one it should have been, and this project ships static binaries for both.
+    # The `-dirty` suffix is the other half: without it a binary built from a
+    # patched working tree reports the very string a pristine release reports,
+    # which is not an omission but a false statement.
+    it "carries the build target and flags a patched tree" do
+      expect(MnemodocServer.version)
+        .to match(%r{\A\S+ \((?:[0-9a-f]{8}(?:-dirty)?|unknown), \w+/\w+\)\z})
+    end
+
+    # This string is the MCP serverInfo's `version`, whose `name` is a separate
+    # field, and the `status` tool's own `version` key. Folding the program
+    # name in here would duplicate it in both.
+    it "does not carry the program name" do
+      expect(MnemodocServer.version).not_to contain("mnemodoc-server")
+    end
+  end
+
+  # The one-line banner a fleet inventory harvests, one service per row. A bare
+  # version number is unattributable the moment it leaves the table that named
+  # it — a pasted bug report, typically.
+  describe ".version_line" do
+    it "prefixes the provenance with the program name" do
+      expect(MnemodocServer.version_line).to eq("mnemodoc-server #{MnemodocServer.version}")
     end
   end
 end

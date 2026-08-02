@@ -94,6 +94,14 @@ Spectator.describe "CLI machine output" do
       payload = JSON.parse(stdout)
       expect(payload["version"].as_s).not_to be_empty
       expect(payload["crystal"].as_s).to contain("Crystal")
+      # The provenance detail lives in `info`, not in the one-line banner.
+      # Added keys, never renamed ones: the payload contract is additive.
+      expect(payload["commit"].as_s).not_to be_empty
+      expect(payload["target"].as_s).to contain("/")
+      expect(payload["built"].as_s).to contain("T")
+      # `tag` is legitimately "unknown" on a repository with no tag at all, so
+      # the contract is the key's presence, not its value.
+      expect(payload.as_h.has_key?("tag")).to be_true
     end
 
     it "emits the selected role" do

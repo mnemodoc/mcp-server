@@ -19,6 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep the raw markdown that already worked
 
 ### Changed
+- **`--version` now names itself and says which platform it is.**
+  `1.2.0 (d86b19d8)` becomes `mnemodoc-server 1.2.0 (d86b19d8-dirty,
+  linux/amd64)`: a bare version number is unattributable once pasted out of the
+  inventory table that named it, the platform settles a wrongly pulled image
+  between the `amd64` and `arm64` static binaries, and `-dirty` closes the one
+  hole that made the string *false* rather than incomplete — a binary built
+  from a patched working tree used to report exactly what a pristine release
+  reports. The MCP `serverInfo` and the `status` tool keep the nameless
+  provenance string, `name` being a field of their own there
+- **`info` decomposes the provenance instead of folding it into one string**,
+  and gains `commit`, `tag` (`git describe --tags`, which catches a `shard.yml`
+  version drifting from the tag actually built), `built` and `target` — in the
+  text block and in `--json` alike. Its `version` field is now the bare shard
+  version, the rest having its own key; the `version` field of `status` is
+  unchanged
 - **A hook payload with no signal no longer yields a role.** Empty stdin,
   malformed JSON, or a well-formed payload for an unhandled event all reached
   the selector with every channel empty and came back with the configured

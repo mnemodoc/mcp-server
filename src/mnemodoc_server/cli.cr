@@ -98,7 +98,7 @@ module MnemodocServer
   # Root Admiral command that registers all subcommands.
   # Prints the help text when invoked without a subcommand.
   class CLI < Admiral::Command
-    define_version MnemodocServer.version
+    define_version MnemodocServer.version_line
     define_help description: "mnemodoc-server — MCP server for documentation search"
 
     # Starts the MCP server in either stdio or HTTP/SSE mode.
@@ -589,7 +589,7 @@ module MnemodocServer
           ollama:  {host: config.ollama.host, model: config.ollama.model},
         }
         emit(payload, json: flags.json, quiet: false) do
-          puts "mnemodoc-server #{MnemodocServer.version}"
+          puts MnemodocServer.version_line
           puts "DB: #{config.db_path}"
           puts "Files indexed: #{files.size}"
           puts "Chunks: #{chunks}"
@@ -1105,13 +1105,27 @@ module MnemodocServer
         # over them would come back empty.
         licenses = flags.licenses ? MnemodocServer::Licenses.files.map { |file| {path: file.path, text: file.gets_to_end} } : nil
 
+        # The provenance is decomposed here rather than folded into one string,
+        # which is the whole difference between this command and the `--version`
+        # banner: the banner is harvested by a fleet inventory and must stay on
+        # one line, this is read by a human chasing down which build answered.
+        # `version` is therefore the bare shard version, the rest standing on
+        # its own field.
         payload = {
-          version:  MnemodocServer.version,
+          version:  MnemodocServer::VERSION,
+          commit:   MnemodocServer.commit,
+          tag:      MnemodocServer.git_tag,
+          built:    MnemodocServer::BUILT_AT,
+          target:   MnemodocServer::TARGET,
           crystal:  Crystal::DESCRIPTION,
           licenses: licenses,
         }
         emit(payload, json: flags.json, quiet: false) do
-          puts "version: #{MnemodocServer.version}"
+          puts "version: #{MnemodocServer::VERSION}"
+          puts "commit:  #{MnemodocServer.commit}"
+          puts "tag:     #{MnemodocServer.git_tag}"
+          puts "built:   #{MnemodocServer::BUILT_AT}"
+          puts "target:  #{MnemodocServer::TARGET}"
           puts
           puts "crystal:"
           puts Crystal::DESCRIPTION

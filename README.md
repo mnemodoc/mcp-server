@@ -458,6 +458,47 @@ usage:
   import_interval: 60    # seconds between two imports of the fallback file
 ```
 
+### Which build am I running?
+
+Two surfaces, deliberately different. `--version` is **one line that names
+itself**, sized for a fleet inventory that collects one row per service — the
+row's left-hand column is gone the moment the line is pasted into a bug report:
+
+```
+$ mnemodoc-server --version
+mnemodoc-server 1.2.0 (d86b19d8-dirty, linux/amd64)
+```
+
+The platform is there because the static binaries ship for `amd64` **and**
+`arm64`, and it settles a wrongly pulled image at a glance. The `-dirty` suffix
+is there because it is the only piece of provenance whose absence makes the
+version *false* rather than merely incomplete: without it, a binary compiled
+from a patched working tree reports the exact string a pristine release
+reports. Outside a git checkout — a source tarball — the commit reads
+`unknown` rather than collapsing to `1.2.0 ()`.
+
+`info` decomposes the same provenance, plus what the banner leaves out, for a
+human chasing down which build answered:
+
+```
+$ mnemodoc-server info
+version: 1.2.0
+commit:  d86b19d8-dirty
+tag:     v1.2.0
+built:   2026-08-02T11:42:45Z
+target:  linux/amd64
+
+crystal:
+Crystal 1.20.3 [2f93147c0] (2026-07-02)
+…
+```
+
+`tag` comes from `git describe --tags`, so it reads `v1.2.0-4-gd86b19d8`
+between two tags — which is what catches a `shard.yml` version that drifted
+from the tag actually built. Every field is always printed, `unknown` standing
+in for what the build could not know: a line that disappears reads as a
+rendering bug. `info --json` carries the same five keys.
+
 `mnemodoc-server info --licenses` prints the third-party licence texts baked into the binary — the notices its statically linked dependencies require when the binary is redistributed on its own.
 
 ### Environment overrides
