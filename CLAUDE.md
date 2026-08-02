@@ -8,7 +8,7 @@ This file provides guidance to Claude Code when working with this repository.
 - Commentaires au-dessus du code (jamais en inline).
 - Code, commentaires et descriptions de tests en anglais.
 - Named arguments sur les appels complexes.
-- Les specs et plans superpowers vont dans `.claude/plans/` (jamais `docs/`, qui est gitignoré et effacé par `mise dev:doc`). Nommage type *serial DNS* : `YYYY-MM-DD-NN-<nom>-<design|plan>.md`, où `NN` est un compteur du jour sur deux chiffres (`01`, `02`, …) incrémenté à chaque nouveau plan. Le design et le plan d'un même sujet partagent date+`NN`.
+- Les specs et plans superpowers vont dans `.claude/plans/` (jamais `docs/`, qui est gitignoré et effacé par `mise dev:docs`). Nommage type *serial DNS* : `YYYY-MM-DD-NN-<nom>-<design|plan>.md`, où `NN` est un compteur du jour sur deux chiffres (`01`, `02`, …) incrémenté à chaque nouveau plan. Le design et le plan d'un même sujet partagent date+`NN`.
 - Toujours privilégier les tâches `mise` plutôt que les commandes brutes : `mise dev:format` (pas `crystal tool format`), `mise dev:build` (pas `crystal build`), `mise dev:spec` (pas `crystal spec`), etc. Voir les tâches dans `mise.toml`.
 - **RÈGLE CRITIQUE** : après *tout* changement de code (même une seule ligne), toujours lancer le `mise dev:check` **complet** (= `mise dev:build && mise dev:ameba && mise dev:spec`). Ne jamais se contenter d'une sous-tâche isolée comme `mise dev:spec` seul.
 

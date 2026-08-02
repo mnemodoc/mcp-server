@@ -52,7 +52,7 @@ description = "Run Crystal spec"
 depends = ["dev:vec0-objects", "dev:licenses", "dev:build"]
 run = "crystal spec {{vars.SPEC_OPTS}}"
 
-[tasks."dev:doc"]
+[tasks."dev:docs"]
 description = "Generate project documentation"
 run = "rm -rf docs && crystal doc"
 
