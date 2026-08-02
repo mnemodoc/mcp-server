@@ -22,6 +22,7 @@
 
 # Ignore local Claude Code settings and plans
 /.claude/settings.local.json
+/.claude/plans/
 
 # Local shard path overrides (dev only)
 /shard.override.yml
