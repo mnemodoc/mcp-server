@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-08-02
 
 ### Fixed
 - **A truncated pipe answered with a stack trace.** `mnemodoc-server info |
@@ -196,6 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-host HTTP connection pool for Ollama calls
 - Static Linux binaries built via `docker buildx bake` (distroless runtime image)
 
+[1.3.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.3.0
 [1.2.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.2.0
 [1.1.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.0.0
