@@ -172,11 +172,18 @@ Spectator.describe MnemodocServer::DaemonProxy do
       lines = output.to_s.lines.reject(&.blank?)
       expect(lines.size).to be >= 2
 
-      init_resp = JSON.parse(lines[0])
-      expect(init_resp["result"]["protocolVersion"].as_s).not_to be_empty
+      # Correlated by id, never by position. The proxy spawns a fiber per input
+      # line, so two requests in flight come back in whatever order the daemon
+      # finishes them — which is precisely what JSON-RPC ids are for. Indexing
+      # lines[0]/lines[1] held on Linux by luck of the scheduling and inverted
+      # on macOS, where this example failed with a KeyError on protocolVersion:
+      # the status reply had arrived first, and its result carries
+      # structuredContent instead.
+      by_id = lines.map { |line| JSON.parse(line) }.to_h { |resp| {resp["id"].as_i, resp} }
 
-      status_resp = JSON.parse(lines[1])
-      sc = status_resp.dig("result", "structuredContent")
+      expect(by_id[1]["result"]["protocolVersion"].as_s).not_to be_empty
+
+      sc = by_id[2].dig("result", "structuredContent")
       expect(sc["status"].as_s).to eq("ok")
 
       # The spawned daemon self-exits via the short idle timeout (2s); give it
