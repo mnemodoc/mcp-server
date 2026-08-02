@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `outline_document` and `read_document`, with the `outline` and `read`
+  subcommands behind them: a document's heading plan, then a numbered window of
+  it. The middle ground between the scattered passages `query_documents` returns
+  and re-reading a whole file
+- Each document's text and heading plan are stored at index time, so a read
+  serves the very copy the returned passages were built from and can never land
+  on a different revision. `verbatim` says whether the line numbers are the
+  file's own or MnemoDoc's extraction, which for Office, PDF, EPUB, notebooks
+  and HTML they are
+- A usage journal: every call that serves a document is recorded — MCP tools,
+  the equivalent subcommands, and the prompt hook including the times it chose
+  to stay silent — with `mnemodoc-server usage` reporting a summary, the served
+  documents, the indexed ones never served, and the searches that came back
+  empty. **It stores the full text of queries and prompts**, in `.mnemodoc/`,
+  which ignores itself; entries older than `usage.retention_days` (default 90)
+  are purged. `usage.enabled: false` stops recording without erasing what was
+  collected
+- `MNEMODOC_USAGE_ENABLED`, `MNEMODOC_USAGE_RETENTION_DAYS` and
+  `MNEMODOC_USAGE_IMPORT_INTERVAL`
+
+### Changed
+- **Every tool call now logs one `info` line.** The split used to be read
+  versus write rather than anything decided: tools that changed the index logged
+  at `info`, tools that read it logged at `debug` or not at all. Since `debug` is
+  off by default, the retrieval half of the server — the half worth auditing —
+  was the invisible half, and checking how the documentation was used meant
+  reading the MCP client's own transcript
+
 ## [1.1.0] - 2026-08-01
 
 ### Added
@@ -118,5 +149,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-host HTTP connection pool for Ollama calls
 - Static Linux binaries built via `docker buildx bake` (distroless runtime image)
 
+[Unreleased]: https://github.com/mnemodoc/mcp-server/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.1.0
 [1.0.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.0.0
