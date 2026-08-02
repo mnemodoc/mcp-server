@@ -253,6 +253,146 @@ Spectator.describe "context CLI command" do
     expect(log_content).to contain("agent=")
   end
 
+  # Claude Code discards a PreToolUse hook's stdout: for that event the client
+  # only reads context out of `hookSpecificOutput.additionalContext`. Printing
+  # the markdown raw there computes a role and throws it away, silently. The
+  # envelope is therefore chosen by the event, not by the flags.
+  describe "output shape per hook event" do
+    # A role whose markdown carries the characters JSON has to escape, so the
+    # round-trip proves the payload is encoded rather than concatenated.
+    private def write_fixture_with_tricky_role
+      File.write(File.join(tmp_dir, "crystal.md"), %(# Crystal role\nSay "no" to `x \\ y`.\nUse idiomatic Crystal.))
+      File.write(config_path, <<-YAML)
+      paths:
+        - .
+      server:
+        log_file: #{log_path}
+      context:
+        roles:
+          - file: crystal.md
+            when_files: ["**/*.cr"]
+      YAML
+    end
+
+    it "wraps the role markdown in the PreToolUse envelope the client reads" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_tricky_role
+      payload = %({"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"src/foo.cr"}})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+
+      expect(result[:code]).to eq(0)
+      emitted = JSON.parse(result[:out])
+      expect(emitted["hookSpecificOutput"]["hookEventName"].as_s).to eq("PreToolUse")
+      expect(emitted["hookSpecificOutput"]["additionalContext"].as_s)
+        .to eq(File.read(File.join(tmp_dir, "crystal.md")))
+    end
+
+    # The query channel already reaches the model: UserPromptSubmit stdout is
+    # appended to the context by the client, so wrapping it would inject a JSON
+    # blob instead of the role.
+    it "keeps UserPromptSubmit on raw stdout" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      payload = %({"session_id":"x","hook_event_name":"UserPromptSubmit","prompt":"ajouter une policy de scope ownership"})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to contain("Policies role")
+      expect(result[:out]).not_to contain("hookSpecificOutput")
+    end
+
+    it "keeps flags-only invocation on raw stdout" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_tricky_role
+      result = run_context(["--config", config_path, "--files", "src/foo.cr"])
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to contain("Crystal role")
+      expect(result[:out]).not_to contain("hookSpecificOutput")
+    end
+
+    # --json is the diagnostic payload, a different format for a different
+    # caller. The hook never passes it, and the envelope must not leak into it.
+    it "leaves the --json diagnostic payload untouched on PreToolUse" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_tricky_role
+      payload = %({"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"src/foo.cr"}})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin", "--json"], payload)
+
+      emitted = JSON.parse(result[:out])
+      expect(emitted["role"].as_s).to eq("crystal")
+      expect(emitted["suppressed"].as_bool).to be_false
+      expect(emitted["content"].as_s).to contain("Crystal role")
+      expect(emitted["hookSpecificOutput"]?).to be_nil
+    end
+  end
+
+  # A hook payload that carries nothing to select on used to fall through to the
+  # configured default role, with exit 0 — so a broken pipe or a malformed
+  # payload injected a plausible but unfounded context, indistinguishable from a
+  # real selection.
+  describe "hook stdin carrying no signal" do
+    it "prints nothing and exits 0 on empty stdin" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], "")
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to be_empty
+    end
+
+    it "prints nothing and exits 0 on stdin that is not JSON" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], "pas du json")
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to be_empty
+    end
+
+    # Valid JSON, well-formed, but an event this adapter does not handle: no
+    # file, no prompt. Same absence of signal, same silence.
+    it "prints nothing on a valid payload for an unhandled event" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"],
+        %({"session_id":"x","hook_event_name":"SessionStart"}))
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to be_empty
+    end
+
+    # Exit 0 and an empty stdout are indistinguishable from a legitimate
+    # silence, so the log line is the only trace this case leaves.
+    it "records the silence in the audit log" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      run_context_stdin(["--config", config_path, "--hook-stdin"], "")
+
+      expect(File.read(log_path)).to contain("no signal")
+    end
+
+    it "reports it as a suppression under --json rather than emitting nothing" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      result = run_context_stdin(["--config", config_path, "--hook-stdin", "--json"], "")
+
+      expect(result[:code]).to eq(0)
+      expect(JSON.parse(result[:out])["suppressed"].as_bool).to be_true
+    end
+
+    # The guard is for the hook, which speaks through stdin. A human running the
+    # command by hand with no flags asked for the default role, and gets it.
+    it "leaves manual flags-only invocation alone" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      result = run_context(["--config", config_path])
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to contain("Generalist role")
+    end
+  end
+
   # server.log_file is frequently a real file, kept far longer than the session
   # that wrote it. The audit line runs at the default level, so anything it
   # carries is on disk in clear: a prompt is the user's own words, and those

@@ -936,11 +936,23 @@ module MnemodocServer
         embedder = Indexer::Embedder.new(config.ollama)
         selector = Roles::Selector.from_config(config, embedder)
         input = resolve_input
+        # Nothing to select on: say nothing. Exit 0 keeps the hook contract, so
+        # this log line is the only trace the case leaves — see
+        # `signalless_hook?` for why the default role is the wrong answer here.
+        signalless = signalless_hook?(input)
+        if signalless
+          Log.for("mnemodoc-server.context").info {
+            "event=#{input.event} hook stdin carried no signal (no files, task or query); nothing injected"
+          }
+          # --json exists so an empty stdout is never mistaken for a failure, so
+          # that mode still reports, with `suppressed` carrying the decision.
+          return unless flags.json
+        end
         selection = selector.select(input.files, input.task, input.query)
-        # Audit trail for role injection, written to server.log_file (never stdout,
-        # which the PreToolUse hook consumes as the role markdown). Fixed format:
-        # every field is always present (empty when absent) so log parsing stays
-        # stable across flags-only and hook-stdin modes.
+        # Audit trail for role injection, written to server.log_file (never
+        # stdout, which carries the hook payload). Fixed format: every field is
+        # always present (empty when absent) so log parsing stays stable across
+        # flags-only and hook-stdin modes.
         # The user's own words are NOT on this line. It runs at the default
         # level, and `server.log_file` is often a real file that outlives the
         # session — a prompt carrying a token or a customer name would be
@@ -956,18 +968,18 @@ module MnemodocServer
           "transcript=#{input.transcript_path.inspect} cwd=#{input.cwd.inspect}" \
           " files=#{input.files.inspect} query=#{input.query.inspect}"
         }
-        # The role markdown goes to stdout verbatim so the hook injects it as-is.
-        # Exception: on UserPromptSubmit (query channel), an undecided prompt that
-        # only resolves to the default role would pollute every turn with the
-        # generalist context, so we stay silent. The audit line above is still
-        # written, keeping the trace even when stdout is suppressed. The files
-        # channel (PreToolUse) always prints, covering cross-cutting edits.
-        suppressed = suppress_for_query?(input, selection, config)
+        # Two reasons to stay silent, both keeping the audit line above: the
+        # input carried no signal at all, or — on UserPromptSubmit alone — an
+        # undecided prompt resolved to the default role, which would spend
+        # context on the generalist role every single turn. The files channel
+        # (PreToolUse) always emits, covering cross-cutting edits.
+        suppressed = signalless || suppress_for_query?(input, selection, config)
 
         # Under --json the payload is always emitted, `suppressed` carrying what
         # the text mode expresses by staying silent — an empty stdout would be
-        # indistinguishable from a failure. The hook never passes --json, so the
-        # verbatim-markdown contract above is untouched.
+        # indistinguishable from a failure. This is a diagnostic format for a
+        # human or a script; the hook never passes --json, and the envelope
+        # below must never leak into it.
         if flags.json
           puts({
             role:       selection.role.name,
@@ -978,13 +990,50 @@ module MnemodocServer
             candidates: selection.candidates.map { |candidate| {name: candidate.name, score: candidate.score} },
             content:    selection.role.content,
           }.to_json)
-        else
-          puts selection.role.content unless suppressed
+        elsif !suppressed
+          emit_role(input, selection.role.content)
         end
       rescue ex : Roles::NoRolesError | Roles::NeedSignalError | File::Error | Indexer::EmbedderError | Hooks::UnknownClientError
         handle_error(ex, json: flags.json)
       ensure
         embedder.try(&.close)
+      end
+
+      # Writes the role in the shape the reader of this stream actually accepts.
+      #
+      # A PreToolUse hook's stdout does NOT reach the model: the client sends it
+      # to its debug journal and drops it. For that event, context is only read
+      # from `hookSpecificOutput.additionalContext`, so the markdown has to be
+      # wrapped — printing it raw computes a role, prints it, and throws it
+      # away, with no error anywhere to show for it.
+      #
+      # Every other case is the opposite. UserPromptSubmit stdout IS the
+      # injected context, and a human running the command in a terminal wants
+      # the markdown, not an envelope. Raw text therefore stays the default,
+      # including for an event this code does not know.
+      private def emit_role(input : Hooks::HookInput, content : String) : Nil
+        if input.event == "PreToolUse"
+          puts({hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: content}}.to_json)
+        else
+          puts content
+        end
+      end
+
+      # True when --hook-stdin yielded nothing to select on: no file, no task,
+      # no query. The test is the absence of signal rather than the kind of
+      # failure, which is what makes it cover the three ways of getting here —
+      # empty stdin, malformed JSON, and a well-formed payload for an event the
+      # adapter does not handle. All three used to reach `Selector#select` with
+      # every channel empty, land on its `context.default` fallback, and print
+      # the generalist role with exit 0: a context nobody asked for, plausible
+      # enough to be believed.
+      #
+      # The guard belongs here and not in `Selector`, whose fallback is correct
+      # and serves callers that did ask (the get_project_context tool). And it
+      # is confined to --hook-stdin: a human invoking `context` with no flags
+      # asked for the default role and still gets it.
+      private def signalless_hook?(input : Hooks::HookInput) : Bool
+        flags.hook_stdin && input.files.empty? && input.task.empty? && input.query.empty?
       end
 
       # True when stdout must stay empty. Two reasons, both confined to the
@@ -996,7 +1045,7 @@ module MnemodocServer
       # context on a prompt that gave no reason to think it needed one.
       #
       # Other events are untouched. A PreToolUse edit names a file, which is a
-      # strong and unambiguous signal, so it always prints.
+      # strong and unambiguous signal, so it always emits.
       private def suppress_for_query?(input : Hooks::HookInput, selection : Roles::Selection,
                                       config : Config) : Bool
         return false unless input.event == "UserPromptSubmit"

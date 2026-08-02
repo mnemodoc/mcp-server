@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **The `PreToolUse` role injection never reached the model.** `context
+  --hook-stdin` printed the role markdown on raw stdout for every event, but a
+  `PreToolUse` hook's stdout is sent to the client's debug journal and dropped —
+  only `hookSpecificOutput.additionalContext` is read as context. The role was
+  computed, printed and thrown away, with exit 0 and nothing in any log to show
+  for it, so the files channel of the context layer had been inoperative since
+  it shipped. The output shape now follows the event: `PreToolUse` gets the JSON
+  envelope, `UserPromptSubmit`, an unknown event and the flags-only invocation
+  keep the raw markdown that already worked
+
+### Changed
+- **A hook payload with no signal no longer yields a role.** Empty stdin,
+  malformed JSON, or a well-formed payload for an unhandled event all reached
+  the selector with every channel empty and came back with the configured
+  `context.default` role — a plausible, unfounded context delivered with exit 0.
+  Under `--hook-stdin`, an input carrying no file, task or query now prints
+  nothing, exits 0, and logs one `info` line saying so (the only trace the case
+  leaves, since the exit code stays 0). Manual invocation without
+  `--hook-stdin` is untouched: a human asking for the default role still gets
+  it, and `--json` still emits its diagnostic payload, with `suppressed: true`
+
 ## [1.2.0] - 2026-08-02
 
 ### Added

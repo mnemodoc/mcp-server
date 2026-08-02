@@ -234,7 +234,7 @@ mnemodoc-server usage [--days N] [--documents|--unused|--misses]           # How
 mnemodoc-server status                                                     # Index stats
 mnemodoc-server delete <path>                                              # Remove from index
 mnemodoc-server context [--files <path>]... [--task <kind>] [--query "<text>"] # Resolve & print the role to adopt
-mnemodoc-server info                                                       # Version info
+mnemodoc-server info [--licenses]                                          # Version, commit, tag, build date, target
 mnemodoc-server prompt-hook                                                # Client hook: inject the best passage for a prompt (stdin)
 mnemodoc-server daemon status                                              # Is this project's daemon running?
 mnemodoc-server daemon stop [--timeout 10]                                 # Stop it gracefully
@@ -575,6 +575,26 @@ missing RAG never warns or blocks an edit.
 # down) must never surface a warning or block the edit.
 mnemodoc-server context --hook-stdin --config .mnemodoc.yml || true
 ```
+
+**The output shape follows the hook event, and the hook script must not touch
+it.** A `PreToolUse` hook's raw stdout does not reach the model — the client
+sends it to its debug journal — so for that event the CLI wraps the role in the
+envelope the client actually reads:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# Backend role\n…"}}
+```
+
+`UserPromptSubmit`, an unknown event and the flags-only form keep printing the
+markdown raw, which is what those readers expect. Piping the CLI's stdout
+through anything that reformats it will break the injection.
+
+A payload carrying no signal at all — empty stdin, malformed JSON, an event the
+adapter does not handle — prints **nothing** and exits 0, leaving one `info`
+line in the audit log. Falling back to the default role there would inject a
+context nobody asked for, plausible enough to be believed. The guard is
+confined to `--hook-stdin`: running `mnemodoc-server context` by hand with no
+flags still prints the configured default.
 
 For clients other than Claude Code, pass `--client <name>` (only `claude-code`
 ships today) or keep the explicit flags form as the portable fallback:
