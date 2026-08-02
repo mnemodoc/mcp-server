@@ -2,12 +2,48 @@
 # Assembles the licenses/ folder baked into the binary from licenses.manifest:
 # shard texts are copied from disk; clib/runtime texts are grouped by SPDX id
 # from the committed canonical texts in licenses-spdx/.
+#
+# WHY THIS EXISTS
+#   A statically linked binary carries its dependencies' code, so it has to
+#   carry their notices too. Harvesting them at build time — rather than
+#   committing a hand-written NOTICE that rots — keeps the shipped artifact
+#   honest as the dependency list moves.
+#
+# WHERE IT GOES
+#   scripts/harvest-licenses.sh, driven by the `dev:licenses` mise task, which
+#   every task that compiles the application declares in its `depends`. The
+#   folder is generated, so it belongs in .gitignore — and a CI job that runs a
+#   compiling task standalone will otherwise fail at macro time, since
+#   baked_file_system reads the folder while the compiler runs.
+#
+# THE TWO INPUTS THE PROJECT OWNS
+#   licenses.manifest — one entry per line, `kind | name | source`:
+#       shard   | mcp      | lib/mcp/LICENSE      on-disk text, copied verbatim
+#       project | myapp    | LICENSE              same, for the project itself
+#       clib    | openssl  | Apache-2.0           SPDX id, grouped by that id
+#       runtime | libgc    | Boehm-GC             same
+#     `#` starts a comment. shard/project entries carry a real copyright line,
+#     so they are copied as-is; clib/runtime entries share one canonical text
+#     between several dependencies, hence the grouping.
+#   licenses-spdx/<id>.txt — the canonical text of each SPDX id used above,
+#     committed once and never edited.
+#
+# The missing-file cases are hard errors on purpose: a notice silently absent
+# from a redistributed binary is the failure this script exists to prevent.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 MANIFEST=licenses.manifest
 OUT=licenses
+
+# A project that bakes no licenses can delete this script, the task and its
+# `depends`. Until it does, skipping cleanly beats failing every build.
+if [ ! -f "$MANIFEST" ]; then
+  echo "harvest: no $MANIFEST, nothing to assemble"
+  exit 0
+fi
+
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
