@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-08-07
+
+### Fixed
+- **Keyword-only search buried the corpus's best match under smaller, weaker
+  files.** A file's BM25 keyword mass was split evenly across all its chunks,
+  so a rare term concentrated in one chunk of a many-chunk file scored, per
+  chunk, below a small file that mentioned a query term once — the best keyword
+  match in the corpus never surfaced. The file's best-matching chunk (the one
+  BM25 ranked highest) now receives the full mass, so files rank by keyword
+  relevance, one representative chunk each. The fix is confined to keyword-only
+  mode: hybrid mode keeps the even split, because it reinforces whichever chunk
+  the semantic signal surfaced and `keyword_weight` caps the mass well below any
+  semantic contribution — a boost there could not lift a lexical-only chunk into
+  the results and only perturbed the prompt hook's top passage
+
 ## [1.3.0] - 2026-08-02
 
 ### Fixed
@@ -196,6 +211,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-host HTTP connection pool for Ollama calls
 - Static Linux binaries built via `docker buildx bake` (distroless runtime image)
 
+[1.3.1]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.3.1
 [1.3.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.3.0
 [1.2.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.2.0
 [1.1.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.1.0
