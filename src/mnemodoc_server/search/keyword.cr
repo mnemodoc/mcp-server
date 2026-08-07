@@ -3,8 +3,10 @@ module MnemodocServer
     # Keyword search backed by SQLite FTS5. The query is tokenized in Crystal —
     # keeping the FR/EN stop-word filter and the whole-word rule — then turned
     # into an OR-joined FTS5 MATCH expression and ranked by BM25 in the store
-    # (best chunk per file). Returns nothing when the query carries no content
-    # terms, so the semantic signal drives natural-language queries alone.
+    # (best chunk per file). Each result carries that best chunk's id so the
+    # caller can attribute the file's keyword mass to the chunk that matched.
+    # Returns nothing when the query carries no content terms, so the semantic
+    # signal drives natural-language queries alone.
     class Keyword
       # Common FR + EN function words that carry no retrieval signal.
       STOP_WORDS = Set{
@@ -16,17 +18,18 @@ module MnemodocServer
         "are", "be", "how", "what", "this", "that", "it", "as", "at", "from",
       }
 
-      # Returns matched files ranked best-first (BM25), as 1-based file ranks.
-      # An empty term list short-circuits without touching FTS5 (which would
-      # raise on an empty MATCH expression).
-      def search(query : String, store : Store::SQLite, limit : Int32) : Array({path: String, rank: Int32})
+      # Returns matched files ranked best-first (BM25), as 1-based file ranks,
+      # each with the id of the file's best-matching chunk. An empty term list
+      # short-circuits without touching FTS5 (which would raise on an empty MATCH
+      # expression).
+      def search(query : String, store : Store::SQLite, limit : Int32) : Array({path: String, rank: Int32, chunk_id: Int64})
         terms = tokenize(query).uniq!
-        empty = [] of {path: String, rank: Int32}
+        empty = [] of {path: String, rank: Int32, chunk_id: Int64}
         return empty if terms.empty?
 
         match = terms.map { |term| %("#{term.gsub('"', "\"\"")}") }.join(" OR ")
         store.keyword_search(match, limit: limit).each_with_index.map do |result, index|
-          {path: result[:path], rank: index + 1}
+          {path: result[:path], rank: index + 1, chunk_id: result[:chunk_id]}
         end.to_a
       end
 

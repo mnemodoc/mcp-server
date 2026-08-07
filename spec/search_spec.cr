@@ -219,7 +219,11 @@ Spectator.describe MnemodocServer::Search do
       expect(hybrid.apply_recency(0.5_f64, old)).to eq(0.5)
     end
 
-    it "does not let a large file outrank a small relevant file by chunk count" do
+    it "ranks the best keyword-matching file first even when it holds many chunks" do
+      # Reproduces the file-size bias: big.md carries the best BM25 match in the
+      # corpus (its one matching chunk names the rare term three times) but holds
+      # ten chunks. Splitting the file's keyword mass across all ten used to bury
+      # it under the single-chunk file, so the best match never surfaced.
       config = MnemodocServer::SearchConfig.from_yaml("mode: keyword\ntop_k: 5\nkeyword_weight: 0.3")
       hybrid = MnemodocServer::Search::Hybrid.new(config)
       tmp_db = "/tmp/mnemodoc-hybrid-kw-#{Random::Secure.hex(4)}.db"
@@ -227,19 +231,20 @@ Spectator.describe MnemodocServer::Search do
       embedding = Array(Float32).new(768, 0.1_f32)
       store.upsert_file("big.md", mtime: 0_i64)
       store.upsert_file("small.md", mtime: 0_i64)
-      big = (1..10).map do |i|
-        MnemodocServer::Chunk.new(file_path: "big.md", heading: "## h#{i}", parent_heading: nil,
-          content: "cron stuff #{i}", embedding: embedding, token_count: 1, mtime: 0_i64)
+      big = [MnemodocServer::Chunk.new(file_path: "big.md", heading: "## match", parent_heading: nil,
+        content: "telomere telomere telomere", embedding: embedding, token_count: 3, mtime: 0_i64)]
+      big += (1..9).map do |i|
+        MnemodocServer::Chunk.new(file_path: "big.md", heading: "## f#{i}", parent_heading: nil,
+          content: "unrelated filler #{i}", embedding: embedding, token_count: 2, mtime: 0_i64)
       end
       small = [MnemodocServer::Chunk.new(file_path: "small.md", heading: "## only", parent_heading: nil,
-        content: "cron stuff", embedding: embedding, token_count: 1, mtime: 0_i64)]
+        content: "telomere", embedding: embedding, token_count: 1, mtime: 0_i64)]
       store.save_chunks(big + small)
-      results = hybrid.search("cron", [] of Float32, store)
+      results = hybrid.search("telomere", [] of Float32, store)
       store.close
       delete_db(tmp_db)
-      # The small file's single chunk must not be buried under the big file's chunks:
-      # its per-chunk keyword mass is higher because the big file's mass is split 10 ways.
-      expect(results.first.chunk.file_path).to eq("small.md")
+      expect(results.first.chunk.file_path).to eq("big.md")
+      expect(results.first.chunk.content).to eq("telomere telomere telomere")
     end
   end
 

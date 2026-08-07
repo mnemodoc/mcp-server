@@ -445,21 +445,25 @@ module MnemodocServer
       # an empty expression). bm25() may only be used in a flat MATCH query (not
       # inside an aggregate or subquery), so rows are scored and ordered in SQL
       # and collapsed to the best score per file here — the first row seen for a
-      # path is its best because the query is ordered ascending.
-      def keyword_search(match : String, limit : Int32) : Array({path: String, score: Float64})
-        results = [] of {path: String, score: Float64}
+      # path is its best because the query is ordered ascending. Each row also
+      # carries that best chunk's id (the FTS rowid IS chunks.id), so the caller
+      # can attribute the file's keyword mass to the chunk that actually matched
+      # rather than spreading it across the file's every chunk.
+      def keyword_search(match : String, limit : Int32) : Array({path: String, score: Float64, chunk_id: Int64})
+        results = [] of {path: String, score: Float64, chunk_id: Int64}
         seen = Set(String).new
         @db.query(
-          "SELECT file_path, bm25(chunks_fts) AS score FROM chunks_fts " \
+          "SELECT file_path, rowid, bm25(chunks_fts) AS score FROM chunks_fts " \
           "WHERE chunks_fts MATCH ? ORDER BY score",
           match
         ) do |result_set|
           result_set.each do
             path = result_set.read(String)
+            chunk_id = result_set.read(Int64)
             score = result_set.read(Float64)
             next if seen.includes?(path)
             seen << path
-            results << {path: path, score: score}
+            results << {path: path, score: score, chunk_id: chunk_id}
             break if results.size >= limit
           end
         end
@@ -467,8 +471,9 @@ module MnemodocServer
       end
 
       # Loads every chunk (with content; embedding left empty) for a set of
-      # files, in one query. Used by the keyword path so only matched files are
-      # hydrated, never the whole corpus. Returns an empty array for no paths.
+      # files, in one query. Used by the rehydrate path
+      # (`MnemodocServer.rehydrated_chunks`) to reload a file's stored chunks.
+      # Returns an empty array for no paths.
       def chunks_for_files(paths : Array(String)) : Array(Chunk)
         return [] of Chunk if paths.empty?
         placeholders = Array.new(paths.size, "?").join(",")

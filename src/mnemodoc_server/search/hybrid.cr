@@ -44,7 +44,7 @@ module MnemodocServer
       # keyword; only the matched files' chunks are then hydrated for fusion.
       def search(query : String, query_vec : Array(Float32), store : Store::SQLite) : Array(SearchResult)
         semantic_results = [] of {chunk: Chunk, score: Float64, rank: Int32}
-        keyword_file_ranks = {} of String => Int32
+        keyword_hits = [] of {path: String, rank: Int32, chunk_id: Int64}
         keyword_chunks = [] of Chunk
 
         if @config.mode.in?("hybrid", "semantic")
@@ -57,19 +57,19 @@ module MnemodocServer
         end
 
         if @config.mode.in?("hybrid", "keyword")
-          kw_results = @keyword.search(query, store, limit: @config.top_k * 4)
-          kw_results.each { |kw_result| keyword_file_ranks[kw_result[:path]] = kw_result[:rank] }
-          keyword_chunks = store.chunks_for_files(keyword_file_ranks.keys) unless keyword_file_ranks.empty?
+          keyword_hits = @keyword.search(query, store, limit: @config.top_k * 4)
+          keyword_chunks = store.chunks_for_files(keyword_hits.map(&.[:path])) unless keyword_hits.empty?
         end
 
-        Log.debug { "fusion: semantic=#{semantic_results.size} chunks, keyword=#{keyword_file_ranks.size} files" }
+        Log.debug { "fusion: semantic=#{semantic_results.size} chunks, keyword=#{keyword_hits.size} files" }
 
         # similarity rides alongside the fused score: RRF still orders, cosine
         # only travels with the result so callers can judge absolute relevance.
         scores = {} of String => {chunk: Chunk, rrf: Float64, similarity: Float64?}
         accumulate_semantic(scores, semantic_results)
-        unless keyword_file_ranks.empty?
-          accumulate_keyword(scores, keyword_file_ranks, keyword_chunks.group_by(&.file_path))
+        unless keyword_hits.empty?
+          accumulate_keyword(scores, keyword_hits, keyword_chunks.group_by(&.file_path),
+            boost_best: @config.mode == "keyword")
         end
 
         cutoff = recency_cutoff
@@ -130,30 +130,43 @@ module MnemodocServer
         end
       end
 
-      # Adds the keyword contribution: a file's TOTAL keyword mass is
-      # keyword_weight * rrf(file_rank), split evenly across all its chunks.
-      # A large file's individual chunks therefore score LOWER than a small
-      # file's chunks, preventing large files from dominating the top-k purely
-      # by having many chunks.
+      # Adds the keyword contribution. A matched file's keyword mass is
+      # keyword_weight * rrf(file_rank), split evenly across its chunks as a
+      # file-level lexical prior. In hybrid mode that prior is all a chunk gets:
+      # it reinforces whichever chunk the semantic signal already surfaced inside
+      # a lexically relevant file, and — crucially — leaves the semantic ordering
+      # (and the cosine the prompt hook reads off the top result) untouched.
+      #
+      # In keyword-only mode there is no semantic signal to concentrate the mass
+      # on the right chunk, so splitting it evenly lets a file's chunk *count*
+      # decide the ranking: the corpus's best keyword match, divided across a big
+      # file's every chunk, sank below a smaller, weaker file. `boost_best` then
+      # gives the file's BEST-matching chunk (the one BM25 ranked highest) the
+      # FULL mass instead of its 1/n share, so files rank by keyword relevance,
+      # one representative chunk each. The boost is confined to this mode because
+      # in hybrid it cannot help — keyword_weight caps the mass well below any
+      # semantic RRF contribution — and only perturbs the hook's top result.
       private def accumulate_keyword(
         scores : Hash(String, NamedTuple(chunk: Chunk, rrf: Float64, similarity: Float64?)),
-        keyword_file_ranks : Hash(String, Int32),
+        keyword_hits : Array(NamedTuple(path: String, rank: Int32, chunk_id: Int64)),
         chunks_by_file : Hash(String, Array(Chunk)),
+        boost_best : Bool,
       ) : Nil
-        keyword_file_ranks.each do |path, rank|
-          file_chunks = chunks_by_file[path]?
+        keyword_hits.each do |hit|
+          file_chunks = chunks_by_file[hit[:path]]?
           next unless file_chunks
-          per_chunk = (@config.keyword_weight * rrf_score(rank)) / file_chunks.size
+          mass = @config.keyword_weight * rrf_score(hit[:rank])
+          prior = mass / file_chunks.size
           file_chunks.each do |chunk|
             key = fusion_key(chunk)
             existing = scores[key]?
             current = existing.try(&.[:rrf]) || 0.0
-            # Never invent a similarity here: a chunk the semantic signal did
-            # not score keeps nil, so it cannot clear a threshold on lexical
-            # evidence alone.
-            scores[key] = {chunk: chunk, rrf: current + per_chunk, similarity: existing.try(&.[:similarity])}
+            contribution = boost_best && chunk.id == hit[:chunk_id] ? mass : prior
+            # Never invent a similarity here: a chunk the semantic signal did not
+            # score keeps nil, so it cannot clear a threshold on lexical evidence alone.
+            scores[key] = {chunk: chunk, rrf: current + contribution, similarity: existing.try(&.[:similarity])}
           end
-          Log.debug { "keyword #{path} rank=#{rank} per_chunk=#{per_chunk.round(5)} over #{file_chunks.size} chunks" }
+          Log.debug { "keyword #{hit[:path]} rank=#{hit[:rank]} mass=#{mass.round(5)} prior=#{prior.round(5)} best=#{hit[:chunk_id]} boost=#{boost_best}" }
         end
       end
     end
