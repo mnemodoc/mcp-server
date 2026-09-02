@@ -3,6 +3,17 @@ require "sqlite3"
 
 module MnemodocServer
   module Store
+    # Raised whenever a vector width meets an index built for another one.
+    #
+    # It is an exception and not a warning because the alternative was measured:
+    # a 1024-dimension model against a 768-dimension table skipped every insert,
+    # logged one WARN per chunk, exited 0, and left an index that reported its
+    # files and answered searches with its keyword signal alone. A caller cannot
+    # tell that apart from a working index, so the only honest outcome is to
+    # stop and name what has to happen (a re-index).
+    class EmbeddingDimMismatch < Exception
+    end
+
     # Persists indexed files and their chunks (with embeddings stored as binary
     # blobs) in a SQLite database. Runs in WAL mode so concurrent readers and a
     # single writer can operate without blocking. A single @write_mutex
@@ -16,13 +27,33 @@ module MnemodocServer
       @count_mutex = Mutex.new
       @chunk_count : Int64? = nil
       @usage : Usage? = nil
+      # The width vec_chunks was created at, and the only value this store will
+      # accept a vector at. nil means "not known yet": no dimension recorded, no
+      # virtual table, and KNN answers empty rather than guessing.
+      @vec_dim : Int32? = nil
+      # Whether the virtual table exists, which is NOT the same question as
+      # which backend is in use. A qdrant-backed store writes no vec0 rows but
+      # can perfectly well open an index that already has the table, and must
+      # still purge it on delete — conflating the two left rowids behind that a
+      # later switch back to vec0 served as missing results.
+      @vec_table : Bool = false
 
       # Five tables: `files` tracks indexed paths and their mtime for change
       # detection; `chunks` holds the embedded sections, cascade-deleted when
       # their parent file is removed; `meta` stores key-value pairs such as
-      # the embedding model name for mismatch detection; `vec_chunks` is the
-      # vec0 virtual table providing KNN search (rowid = chunks.id); `chunks_fts`
-      # is the FTS5 virtual table providing BM25 keyword search (rowid = chunks.id);
+      # the embedding model name and vector dimension for mismatch detection;
+      # `chunks_fts` is the FTS5 virtual table providing BM25 keyword search
+      # (rowid = chunks.id);
+      #
+      # `vec_chunks` is deliberately ABSENT from this constant. vec0 freezes the
+      # vector width in its DDL (`float[N]`), and N is a property of the
+      # embedding model, which this class cannot know at open time. It is
+      # created by `ensure_vec_table!` once the dimension is known — from
+      # `meta.embedding_dim`, from a probe before a crawl, or from the first
+      # vector actually written. Declaring it here at a fixed 768 is what let a
+      # 1024-dimension model build an index with no vectors at all, one WARN per
+      # chunk, and a `query_documents` that answered keyword results under the
+      # name "hybrid";
       # `documents` holds each file's text as the reading tools serve it, with
       # `verbatim` telling the file itself apart from a handler's extraction; and
       # `outline` holds its heading plan. Both cascade with their file, like
@@ -55,10 +86,6 @@ module MnemodocServer
         CREATE TABLE IF NOT EXISTS meta (
           key   TEXT PRIMARY KEY,
           value TEXT NOT NULL
-        );
-
-        CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
-          embedding float[768]
         );
 
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -193,6 +220,7 @@ module MnemodocServer
         return if chunks.empty?
         invalidate_chunk_count
         @write_mutex.synchronize do
+          adopt_dim_for(chunks)
           write_chunks_transaction(chunks)
         end
       end
@@ -207,6 +235,13 @@ module MnemodocServer
                      text : String, verbatim : Bool, outline : Array(Indexer::OutlineEntry)) : Nil
         invalidate_chunk_count
         @write_mutex.synchronize do
+          # Ahead of the transaction, deliberately. Adopting a width writes a
+          # DDL statement and a meta row; done inside the caller's transaction,
+          # a rollback undid both while the in-memory width survived, leaving
+          # the store pointing at a table that no longer existed. Outside it,
+          # the worst a rollback leaves behind is an empty vec table of the
+          # right width — which is exactly what the next write needs.
+          adopt_dim_for(chunks)
           now = Time.utc.to_unix
           @db.transaction do |tx|
             cnn = tx.connection
@@ -216,6 +251,7 @@ module MnemodocServer
             )
             after_file_upsert(path)
             write_chunks_into(cnn, chunks)
+            after_chunk_write(path)
             write_document_into(cnn, path, text, verbatim, outline)
           end
         end
@@ -293,10 +329,19 @@ module MnemodocServer
       # Wipes the entire index: all files (cascading their chunks), the vec0
       # index, and the FTS index. Used when the embedding model changes so the
       # next crawl re-indexes every file with the new model.
+      #
+      # The vec0 table is DROPPED, not emptied, and the recorded dimension goes
+      # with it. Emptying would keep the width of the model being replaced, so
+      # the very rebuild this clear exists to trigger would meet a table frozen
+      # at the old size and skip every vector — which is the failure that
+      # brought this code into being, merely deferred by one command.
       def clear_index! : Nil
         invalidate_chunk_count
         @write_mutex.synchronize do
-          @db.exec("DELETE FROM vec_chunks")
+          @db.exec("DROP TABLE IF EXISTS vec_chunks")
+          @db.exec("DELETE FROM meta WHERE key = 'embedding_dim'")
+          @vec_dim = nil
+          @vec_table = false
           @db.exec("DELETE FROM chunks_fts")
           @db.exec("DELETE FROM files")
         end
@@ -325,6 +370,12 @@ module MnemodocServer
           end
           rows
         end
+      end
+
+      # Test-only seam, third of three: fires inside the index_file transaction
+      # once the chunks are written, which is the only window in which a write
+      # can roll back schema the chunk write itself created. No-op in production.
+      protected def after_chunk_write(path : String) : Nil
       end
 
       # Test-only seam, mirroring after_file_upsert: fires inside the delete
@@ -427,8 +478,11 @@ module MnemodocServer
       end
 
       # Number of rows in the vec0 index. Used by specs to assert the vec index
-      # stays in sync with the chunks table (no orphaned embeddings).
+      # stays in sync with the chunks table (no orphaned embeddings). Zero when
+      # no dimension has been adopted: the table does not exist then, and
+      # "no vectors" is the honest answer rather than a SQL error.
       def vec_chunk_count : Int64
+        return 0_i64 unless @vec_table
         @db.query_one("SELECT COUNT(*) FROM vec_chunks", as: Int64)
       end
 
@@ -591,6 +645,20 @@ module MnemodocServer
       # Hydrates the full Chunk structs from the chunks+files tables. Returns
       # results ordered by ascending distance (rank 1 = closest match).
       def knn_chunks(query_vec : Array(Float32), limit : Int32) : Array({chunk: Chunk, score: Float64, rank: Int32})
+        dim = @vec_dim
+        # No dimension adopted means no vectors at all — an empty index, or one
+        # whose first crawl has yet to run. Nothing to return, and nothing wrong.
+        return [] of {chunk: Chunk, score: Float64, rank: Int32} if !@vec_table || dim.nil?
+        # A query vector of another width, though, is a caller searching a
+        # corpus embedded by a different model. vec0 would reject the MATCH with
+        # its own message and the fusion above would quietly answer with the
+        # keyword signal alone, which reads as a working hybrid search.
+        if query_vec.size != dim
+          raise EmbeddingDimMismatch.new(
+            "the query embedding has #{query_vec.size} dimensions but this index stores " \
+            "#{dim}-dimension vectors: the configured embedding model is not the one the " \
+            "index was built with — re-index before searching")
+        end
         query_str = "[#{query_vec.join(",")}]"
         knn_rows = [] of {rowid: Int64, distance: Float64}
         @db.query(
@@ -658,14 +726,118 @@ module MnemodocServer
           stmt = stmt.strip
           @db.exec(stmt) unless stmt.empty?
         end
-        backfill_vec_chunks if @vec0
+        adopt_recorded_dim!
+        backfill_vec_chunks if @vec0 && vec_ready?
         backfill_fts_chunks
+      end
+
+      # Restores @vec_dim from what the database already knows, and reconciles
+      # the two places that can know it.
+      #
+      # Two orders are possible and both are legitimate. `meta.embedding_dim`
+      # without a table is an index whose virtual table was dropped — by a
+      # `clear_index!`, or by running under the qdrant backend — and the table
+      # is rebuilt at the recorded width, the startup backfill refilling it from
+      # the durable BLOBs. A table without the meta row is an index built before
+      # the dimension was recorded at all: its width is readable from its own
+      # DDL, and writing it down is what gives every later check something to
+      # compare against. A fresh database has neither, and stays without a
+      # dimension until one is adopted.
+      private def adopt_recorded_dim! : Nil
+        recorded = meta_get("embedding_dim").try(&.to_i?)
+        table_dim = vec_table_dim
+
+        # The two disagreeing is not a model mismatch but corrupt bookkeeping,
+        # reachable only by editing the database by hand. The DDL wins, because
+        # it is the record that actually constrains: vec0 cannot be made to
+        # accept a vector of another width, so no wrong answer can come of
+        # trusting it, while refusing to open would take the read-only tools,
+        # keyword search and `status` down with an index they work fine against.
+        # The meta row is then corrected rather than left to disagree again.
+        if recorded && table_dim && recorded != table_dim
+          Log.warn { "index metadata records #{recorded}-dimension vectors but vec_chunks is declared float[#{table_dim}]; trusting the table and correcting the metadata" }
+        end
+
+        dim = table_dim || recorded
+        return if dim.nil?
+
+        @vec_dim = dim
+        @vec_table = !table_dim.nil?
+        if recorded != dim
+          @db.exec(
+            "INSERT INTO meta (key, value) VALUES ('embedding_dim', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            dim.to_s
+          )
+        end
+        ensure_vec_table!(@db, dim) if @vec0 && table_dim.nil?
+      end
+
+      # The width vec_chunks was declared at, read back from its own DDL, or nil
+      # when the table does not exist. sqlite_master is the only place that
+      # holds it: vec0 exposes no introspection of its own.
+      def vec_table_dim : Int32?
+        sql = @db.query_one?(
+          "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'vec_chunks'",
+          as: String?
+        )
+        return nil if sql.nil?
+        sql.match(/float\s*\[\s*(\d+)\s*\]/).try(&.[1].to_i)
+      end
+
+      # The recorded vector width of this index, or nil when none was adopted.
+      def embedding_dim : Int32?
+        @vec_dim
+      end
+
+      # True when the virtual table exists and its width is known — the two
+      # conditions any vec0 statement needs, whatever the configured backend.
+      def vec_ready? : Bool
+        @vec_table && !@vec_dim.nil?
+      end
+
+      # Adopts `dim` for this index, or refuses it.
+      #
+      # Called before a crawl, with the width of an embedding the configured
+      # model has just produced. Refusing here rather than at write time is the
+      # whole point: the crawler rescues per file (see Indexer::Crawler#run), so
+      # an error raised while writing a chunk would come back as a `failed`
+      # counter — the same silent degradation in a different disguise.
+      def prepare_embedding_dim!(dim : Int32) : Nil
+        stored = @vec_dim
+        if stored && stored != dim
+          raise EmbeddingDimMismatch.new(
+            "index was built with #{stored}-dimension vectors and the configured embedding " \
+            "model produces #{dim}: sqlite-vec freezes the width in the table definition, so " \
+            "the index cannot be extended — a full re-index is required (delete the index " \
+            "directory, or let the model change clear it)")
+        end
+        return if stored
+
+        @write_mutex.synchronize do
+          @db.exec(
+            "INSERT INTO meta (key, value) VALUES ('embedding_dim', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            dim.to_s
+          )
+          ensure_vec_table!(@db, dim) if @vec0
+          @vec_dim = dim
+        end
+      end
+
+      # Creates the vec0 virtual table at the given width. `dim` is an Int32
+      # this class derived itself, never a caller's string, so interpolating it
+      # into the DDL carries no injection surface — and vec0 takes no bind
+      # parameter in a CREATE.
+      private def ensure_vec_table!(executor, dim : Int32) : Nil
+        executor.exec("CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(embedding float[#{dim}])")
+        @vec_table = true
       end
 
       # Backfills vec_chunks from the durable chunks.embedding BLOBs when the
       # virtual table is empty. Called after every migration so restarts after a
       # crash or the first open of an existing DB auto-populate the vec index.
       private def backfill_vec_chunks : Nil
+        dim = @vec_dim
+        return if dim.nil?
         count = @db.query_one("SELECT COUNT(*) FROM vec_chunks", as: Int64)
         return unless count == 0
         chunk_count = @db.query_one("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL AND length(embedding) > 0", as: Int64)
@@ -680,7 +852,14 @@ module MnemodocServer
               blob = result_set.read(Bytes)
               next if blob.empty?
               vec = deserialize_embedding(blob)
-              next if vec.size != 768
+              # A stored BLOB of another width predates the current index: it
+              # cannot be searched against these vectors, so it is left out of
+              # vec0 rather than rejected — refusing here would make an index
+              # carrying one stale row impossible to open at all.
+              if vec.size != dim
+                Log.warn { "skipping backfill of a #{vec.size}-dimension embedding into a float[#{dim}] index (chunk #{id})" }
+                next
+              end
               vec_str = "[#{vec.join(",")}]"
               cnn.exec("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)", id, vec_str)
             end
@@ -719,10 +898,15 @@ module MnemodocServer
       # their rowids reference are deleted. Accepts either the pooled database or
       # a transaction connection (both respond to #exec).
       private def cleanup_virtual_indexes(executor, file_path : String) : Nil
-        executor.exec(
-          "DELETE FROM vec_chunks WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)",
-          file_path
-        )
+        # Guarded on the table existing, NOT on the configured backend: a
+        # qdrant-backed store that opened an index carrying a vec0 table still
+        # owns those rows, and skipping the purge orphans them.
+        if @vec_table
+          executor.exec(
+            "DELETE FROM vec_chunks WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)",
+            file_path
+          )
+        end
         executor.exec(
           "DELETE FROM chunks_fts WHERE rowid IN (SELECT id FROM chunks WHERE file_path = ?)",
           file_path
@@ -771,17 +955,65 @@ module MnemodocServer
             rowid, chunk.content, chunk.heading, chunk.file_path
           )
           # Insert this chunk's embedding into vec_chunks using the same rowid.
-          # Skipped entirely under the qdrant backend (@vec0 == false); otherwise
-          # only inserted when the embedding has the expected 768 dimensions.
-          if @vec0
-            if chunk.embedding.size == 768
+          # Skipped entirely under the qdrant backend (@vec0 == false), and for a
+          # chunk whose embedding failed: it carries an empty vector, is indexed
+          # for keyword search all the same, and has simply nothing to put in
+          # vec0. Any other width is a mismatch and raises — see verify_dim!.
+          # The width itself was adopted before this transaction opened.
+          unless chunk.embedding.empty?
+            verify_dim!(chunk.embedding.size, chunk.file_path)
+            if @vec0
               vec_str = "[#{chunk.embedding.join(",")}]"
               cnn.exec("INSERT INTO vec_chunks(rowid, embedding) VALUES (?, ?)", rowid, vec_str)
-            else
-              Log.warn { "skipping vec_chunks insert: embedding size #{chunk.embedding.size} != 768 for #{chunk.file_path}" }
             end
           end
         end
+      end
+
+      # Adopts or verifies the vector width from a vector about to be written,
+      # on the transaction's own connection.
+      #
+      # It runs on `cnn` and not through meta_set/prepare_embedding_dim! because
+      # the write mutex is already held by the caller: Crystal's Mutex is
+      # checked, so taking it again from the same fiber raises rather than
+      # deadlocking. Riding the caller's transaction is also the correct
+      # semantics — the table, the meta row and the first vector commit together
+      # or not at all.
+      #
+      # This is the last line of defence, not the usual path: a crawl probes the
+      # model first (MnemodocServer.probe_embedding_dim!). It matters for the one
+      # entry point that legitimately indexes without a probe — `init`, which is
+      # allowed to run before Ollama is up.
+      private def adopt_dim_for(chunks : Array(Chunk)) : Nil
+        chunk = chunks.find { |candidate| !candidate.embedding.empty? }
+        return if chunk.nil?
+        size = chunk.embedding.size
+        dim = @vec_dim
+        unless dim.nil?
+          verify_dim!(size, chunk.file_path)
+          return
+        end
+
+        @db.exec(
+          "INSERT INTO meta (key, value) VALUES ('embedding_dim', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+          size.to_s
+        )
+        ensure_vec_table!(@db, size) if @vec0
+        @vec_dim = size
+        Log.info { "adopted #{size}-dimension embeddings for this index" }
+      end
+
+      # Refuses a vector this index cannot hold. Cheap and read-only, so it runs
+      # per chunk inside the write: a batch mixing two widths is caught on the
+      # one that does not fit, not on whichever happened to come first.
+      private def verify_dim!(size : Int32, file_path : String) : Nil
+        dim = @vec_dim
+        return if dim.nil? || dim == size
+
+        raise EmbeddingDimMismatch.new(
+          "#{file_path} produced a #{size}-dimension embedding but this index stores " \
+          "#{dim}-dimension vectors: sqlite-vec freezes the width in the table definition, " \
+          "so a full re-index is required")
       end
 
       # Packs the Float32 vector into a little-endian blob (4 bytes per value).

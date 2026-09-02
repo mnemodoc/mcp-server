@@ -34,7 +34,8 @@ Spectator.describe "daemon crash resilience" do
   # Ollama's `POST /api/embed` contract used by Embedder#embed_many: request
   # body `{model, input: [...]}`, response `{embeddings: [[...]]}`.
   #
-  # The first request is answered with a valid 768-dim embedding so the daemon
+  # The dimension probe is always answered, and does not count. The first file
+  # request is then answered with a valid 768-dim embedding so the daemon
   # commits file 1. The second request pushes nil onto *second_request* (proof
   # that file 1 is committed and file 2 is now mid-flight) and then blocks the
   # connection fiber forever, keeping the daemon inside file 2's uncommitted
@@ -47,10 +48,15 @@ Spectator.describe "daemon crash resilience" do
 
     server = HTTP::Server.new do |ctx|
       body = ctx.request.body.try(&.gets_to_end) || ""
-      count = JSON.parse(body)["input"].as_a.size rescue 1
+      inputs = JSON.parse(body)["input"].as_a rescue [] of JSON::Any
+      count = inputs.empty? ? 1 : inputs.size
 
-      ordinal = request_mutex.synchronize { request_count += 1 }
-      if ordinal == 1
+      # The dimension probe the daemon runs before the crawl is answered
+      # without consuming an ordinal: it is not one of the two files whose
+      # ordering this test is built on.
+      probe = inputs.any? { |input| input.as_s? == MnemodocServer::DIM_PROBE_TEXT }
+      ordinal = probe ? 0 : request_mutex.synchronize { request_count += 1 }
+      if probe || ordinal == 1
         ctx.response.status_code = 200
         ctx.response.content_type = "application/json"
         ctx.response.print({"embeddings" => Array.new(count, embedding)}.to_json)

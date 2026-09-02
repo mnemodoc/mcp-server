@@ -368,7 +368,7 @@ project root.
 | `read_document` | `path` (string) | `offset` (int, 1-based), `limit` (int, max 2000) | numbered `content`, offset, limit, returned, line_count, verbatim, stale, eof |
 | `list_files` | — | — | list of indexed files with metadata |
 | `delete_file` | `path` (string) | — | confirmation |
-| `status` | — | — | version, chunk_count, file_count, model, search_mode, db_path |
+| `status` | — | — | version, chunk_count, file_count, model, embedding_dim, search_mode, db_path |
 | `get_project_context` | — | `files` (string[]), `task` (string), `query` (string) | the selected role's markdown (text) + structured `role`, `reason`, `score`, `candidates` |
 
 `query_documents` optional args override the config values for that request only.
@@ -515,7 +515,9 @@ Booleans accept `true/1/yes/on` in any case. A value that cannot be read — a n
 
 **Index location** — by default the index lives in `.mnemodoc/index.db`, in the directory holding the config file. That directory also holds the SQLite WAL files and the daemon's socket and lock, and receives a self-ignoring `.gitignore` on creation, so none of it can be committed by accident. Keeping the index inside the project makes it discoverable, ties its lifetime to the project, and lets it survive a rename or a move of the project directory. Set `db.path` to put the database anywhere else — useful when the project directory is read-only, lives in a folder synchronised by Dropbox/iCloud (which can corrupt a SQLite database in WAL mode), or is wiped by `git clean -xdf`. An explicit `db.path` is used verbatim and gets no `.gitignore`.
 
-**Model mismatch** — if you change `ollama.model` in the config, re-index before querying. Vectors from different models have incompatible dimensions and will silently score near-zero. `query_documents` emits a `warning` field in the response when it detects a mismatch.
+**Model mismatch** — changing `ollama.model` invalidates every stored vector, and the server now refuses rather than degrades. `query_documents` and `mnemodoc-server search` fail with an explicit message in `hybrid` and `semantic` modes; `keyword` mode still answers, carrying a warning that the semantic half is missing. `mnemodoc-server index` and `ingest_path` refuse a partial rebuild for the same reason. Running the server (`serve`) repairs it instead: a model change clears the index and re-indexes everything with the new model.
+
+**Vector dimension** — the width of a vector is a property of the model, so there is no setting for it. It is measured from an embedding the configured model actually produced, recorded in the index as `embedding_dim`, and used to create the sqlite-vec table. sqlite-vec freezes that width in the table definition and offers no way to alter it, which is why a change of dimension is a rebuild and not a setting: the table is dropped, recreated and refilled. Every path that could meet a vector of another width — indexing, ingesting, searching — stops with a message naming the two dimensions and asking for a re-index. It never skips the vector and carries on: an index that accepted the text and dropped every vector reported its files, answered searches from its keyword index alone, and was indistinguishable from a healthy one.
 
 **Streaming ingest** — MCP clients that support progress reporting can send `Accept: text/event-stream` with a `tools/call ingest_path` request. The server streams `notifications/progress` events per file indexed, followed by the final result frame. Include `_meta.progressToken` in the request arguments to receive progress notifications:
 

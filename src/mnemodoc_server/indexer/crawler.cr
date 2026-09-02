@@ -97,7 +97,7 @@ module MnemodocServer
         return {0, 0} if to_index.empty?
 
         jobs = Channel({path: String, mtime: Int64, explicit: Bool}).new(to_index.size)
-        results = Channel({success: Bool, path: String, failed: Int32}).new(to_index.size)
+        results = Channel({success: Bool, path: String, failed: Int32, fatal: Exception?}).new(to_index.size)
 
         # Spawn bounded worker fibers
         concurrency.times do
@@ -105,13 +105,26 @@ module MnemodocServer
             loop do
               job = jobs.receive?
               break if job.nil?
+              fatal = nil.as(Exception?)
               outcome = begin
                 index_one(job, store, embedder, sf)
+              rescue ex : Store::EmbeddingDimMismatch
+                # The one error a per-file rescue must not absorb. Every stored
+                # vector has one width, frozen in the vec0 table's DDL, so a
+                # vector of another width is not this file failing — it is the
+                # whole run being impossible. Counting it per file turns the
+                # refusal back into the silent degradation it exists to replace:
+                # a `failed` tally, exit 0, and an index that answers searches
+                # from its keyword half. It travels through the channel rather
+                # than out of the fiber, because raising here would leave the
+                # collector below waiting for a result that never arrives.
+                fatal = ex
+                {success: false, failed: 0}
               rescue ex
                 Log.error { "unexpected error indexing #{job[:path]}: #{ex.message}" }
                 {success: false, failed: 0}
               end
-              results.send({success: outcome[:success], path: job[:path], failed: outcome[:failed]})
+              results.send({success: outcome[:success], path: job[:path], failed: outcome[:failed], fatal: fatal})
             end
           end
         end
@@ -132,13 +145,19 @@ module MnemodocServer
         count = 0
         processed = 0
         total_failed = 0
+        fatal = nil.as(Exception?)
         to_index.size.times do
           result = results.receive
           processed += 1
           count += 1 if result[:success]
           total_failed += result[:failed]
+          fatal ||= result[:fatal]
           progress.try(&.call(processed, to_index.size, result[:path]))
         end
+        # Drained first, then raised: the workers are fed from a closed channel
+        # and every one of them must be able to finish its send, or the fibers
+        # outlive the run holding the store.
+        raise fatal if fatal
         {count, total_failed}
       end
 

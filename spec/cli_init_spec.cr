@@ -41,6 +41,63 @@ Spectator.describe "init CLI command" do
     end
   end
 
+  # `init` is re-runnable, so it can meet an index that was built at another
+  # vector width — a model re-released at a different size, typically. The
+  # refusal that raises there has to come out as this command's own error
+  # contract, not as an unhandled exception with a backtrace.
+  describe "an index built at another vector width" do
+    private def ollama_returning_dims(dims : Int32, &)
+      row = Array(Float32).new(dims, 0.1_f32)
+      server = HTTP::Server.new do |ctx|
+        body = ctx.request.body.try(&.gets_to_end) || ""
+        count = (JSON.parse(body)["input"].as_a.size rescue 1)
+        ctx.response.status_code = 200
+        ctx.response.content_type = "application/json"
+        ctx.response.print({"embeddings" => Array.new(count, row)}.to_json)
+      end
+      addr = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      Fiber.yield
+      begin
+        yield addr.port
+      ensure
+        server.close
+      end
+    end
+
+    it "reports the refusal as a JSON error rather than raising" do
+      Dir.mkdir_p(File.join(root, "docs"))
+      File.write(File.join(root, "docs", "a.md"), "# Title\n\nbody text\n")
+
+      ollama_returning_dims(768) do |port|
+        File.write(File.join(root, ".mnemodoc.yml"),
+          "paths:\n  - docs/\nollama:\n  host: http://127.0.0.1:#{port}\nserver:\n  log_level: error\n")
+        expect(run_init()[:code]).to eq(0)
+      end
+
+      # Something must actually be re-embedded for a width to be produced at
+      # all: an unchanged corpus is skipped by mtime, writes nothing, and
+      # leaves a coherent index — the refusal then comes from the first search
+      # instead (spec/embedding_dim_spec.cr covers that side).
+      # A NEW path rather than an edit of the old one: mtime has second
+      # granularity, so a rewrite inside the same second is indistinguishable
+      # from no change and the crawler skips it.
+      File.write(File.join(root, "docs", "b.md"), "# Second\n\nmore body text\n")
+
+      # Same model name, a different width: only the dimension can catch this.
+      ollama_returning_dims(1024) do |port|
+        File.write(File.join(root, ".mnemodoc.yml"),
+          "paths:\n  - docs/\nollama:\n  host: http://127.0.0.1:#{port}\nserver:\n  log_level: error\n")
+        # No --force: that regenerates .mnemodoc.yml, which would discard the
+        # host this test points at.
+        result = run_init(["--json"])
+        expect(result[:code]).to eq(1)
+        expect(JSON.parse(result[:err])["error"].as_s).to contain("768")
+        expect(result[:err]).not_to contain("Backtrace")
+      end
+    end
+  end
+
   describe "path detection" do
     it "writes the documentation directories it actually found" do
       Dir.mkdir_p(File.join(root, "docs"))

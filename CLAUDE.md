@@ -269,6 +269,56 @@ re-attaches the embeddings before rewriting the chunks: `chunks_for_files`
 deliberately returns them empty, so writing those straight back through
 `index_file` would erase every vector of the file.
 
+### The embedding dimension is a lifecycle, not a setting
+
+sqlite-vec freezes the vector width in the virtual table's DDL (`float[N]`) and
+offers no `ALTER`. A change of embedding model that changes the width is
+therefore a destroy-recreate-re-embed cycle, and the code treats it as one.
+
+**There is deliberately no `ollama.dimensions:` in the config.** The width is a
+property of the model, and a second setting beside `ollama.model` would be one
+more source of truth to desynchronise. It is measured instead — from an
+embedding the configured model really produced — and recorded as
+`meta.embedding_dim`, beside `embedding_model`. A model → dimension table was
+rejected for the same reason: it would lie the day a model is re-released at
+another size.
+
+**The measurement is a probe at the START of an indexing run**, not at store
+open. `MnemodocServer.probe_embedding_dim!` embeds one short string, then hands
+the width to `Store::SQLite#prepare_embedding_dim!`, which adopts it or refuses
+the run. Two constraints fix that placement. It cannot be at open time: the
+read-only tools, keyword search and `init` all work with Ollama down, and today
+`init` is explicitly allowed to run before Ollama is up. And it cannot be at
+write time: `Indexer::Crawler#run` rescues per file, so a mismatch raised while
+writing a chunk comes back as a `failed` counter — the same silent degradation
+in a different disguise. An unreachable model is *not* a probe failure and
+returns nil, since Ollama's liveness is already reported by that counter and by
+`index`'s exit code; only `Store::EmbeddingDimMismatch` escapes.
+
+`Store::SQLite#adopt_dim_within` is the write-time fallback for the one path
+that legitimately indexes without a probe. It runs on the caller's transaction
+connection rather than through `meta_set`, because the write mutex is already
+held and Crystal's `Mutex` is checked — taking it twice from one fiber raises.
+
+**`clear_index!` drops the table rather than emptying it**, and clears
+`embedding_dim` with it. Emptying would keep the width of the model being
+replaced, so the rebuild that clear exists to trigger would meet a table frozen
+at the old size — the original bug, deferred by one command.
+
+**The width is recorded even under the qdrant backend**, which writes no vec0
+table at all: it describes the stored vectors, not the backend reading them.
+Without that, switching back to vec0 left an index full of embeddings that
+nothing could size a table for.
+
+**A divergence stops the caller; it is never skipped.** The measured failure it
+replaces: a 1024-dimension model against the hardcoded `float[768]` table
+skipped every insert, logged 1 221 WARN lines, exited 0, and produced an index
+that listed its files and answered `query_documents` with its keyword signal
+alone under the name "hybrid". `query_documents` and `search` therefore refuse
+in `semantic`/`hybrid` mode on a model change instead of returning results with
+a warning beside them; `keyword` mode still answers, since it touches no vector,
+and says what the answer is missing.
+
 ### Every tool call is an audit line
 
 All six tools log one `info` line per call, so `server.log_file` shows what the
@@ -463,7 +513,7 @@ the user's critical path.
 | `ingest_path` | Index a file or directory |
 | `list_files` | List indexed files with metadata |
 | `delete_file` | Remove a file from the index |
-| `status` | Server status: chunk count, Ollama config, version |
+| `status` | Server status: chunk count, Ollama config, indexed vector width, version |
 | `outline_document` | A document's heading plan: level, title, start/end line, length |
 | `read_document` | A numbered window of a stored document, served from the index |
 | `get_project_context` | Select the role to adopt for the current files/task/query; returns the role's markdown + structured `role`/`reason`/`score`/`candidates` |

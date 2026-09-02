@@ -145,14 +145,34 @@ Spectator.describe "MnemodocServer tools" do
       end
     end
 
-    it "surfaces a model mismatch in structured_content.warnings" do
+    # A model change invalidates every stored vector, so the two modes that use
+    # one cannot answer. They used to: results came back with a warning beside
+    # them, ranked by the keyword signal alone under the name "hybrid" — which
+    # is indistinguishable, to whatever asked, from a working search.
+    it "refuses a hybrid search outright when the model changed" do
       store.embedding_model = "some-old-model"
       with_mock_ollama do |cfg|
         built = MnemodocServer::ToolRegistry.build(cfg, store)
         begin
-          result = built[:server].dispatch("query_documents", {"query" => JSON::Any.new("x")})
+          expect { built[:server].dispatch("query_documents", {"query" => JSON::Any.new("x")}) }
+            .to raise_error(MCP::ToolError, /some-old-model/)
+        ensure
+          built[:embedder].close
+        end
+      end
+    end
+
+    # Keyword mode is the honest exception: it never touches a vector, so it
+    # still answers — and says what the answer is missing.
+    it "still answers in keyword mode, with a warning about the missing signal" do
+      store.embedding_model = "some-old-model"
+      with_mock_ollama do |cfg|
+        built = MnemodocServer::ToolRegistry.build(cfg, store)
+        begin
+          result = built[:server].dispatch("query_documents",
+            {"query" => JSON::Any.new("x"), "mode" => JSON::Any.new("keyword")})
           warnings = result.structured_content.try(&.["warnings"]).try(&.as_a).try(&.map(&.as_s)) || [] of String
-          expect(warnings.any?(&.includes?("re-index required"))).to be_true
+          expect(warnings.any?(&.includes?("keyword signal only"))).to be_true
         ensure
           built[:embedder].close
         end
@@ -182,6 +202,33 @@ Spectator.describe "MnemodocServer tools" do
         sc = result.structured_content
         expect(sc).not_to be_nil
         expect(sc.try(&.["status"].as_s)).to eq("ok")
+      ensure
+        built[:embedder].close
+      end
+    end
+
+    # The vector width is a property of the index, not of the configuration, so
+    # it is the one figure that tells an agent whether semantic search has
+    # anything to work with — and, next to `model`, whether the two agree.
+    it "reports the indexed vector width, null while nothing is embedded" do
+      built = MnemodocServer::ToolRegistry.build(config, store)
+      begin
+        result = built[:server].dispatch("status", {} of String => JSON::Any)
+        expect(result.structured_content.try(&.["embedding_dim"].raw)).to be_nil
+      ensure
+        built[:embedder].close
+      end
+
+      store.upsert_file("/dim.md", mtime: 1000_i64)
+      store.save_chunks([MnemodocServer::Chunk.new(
+        file_path: "/dim.md", heading: nil, parent_heading: nil,
+        content: "body", embedding: Array(Float32).new(1024, 0.1_f32),
+        token_count: 1, mtime: 1000_i64)])
+
+      built = MnemodocServer::ToolRegistry.build(config, store)
+      begin
+        result = built[:server].dispatch("status", {} of String => JSON::Any)
+        expect(result.structured_content.try(&.["embedding_dim"].as_i)).to eq(1024)
       ensure
         built[:embedder].close
       end

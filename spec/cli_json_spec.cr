@@ -77,6 +77,9 @@ Spectator.describe "CLI machine output" do
       expect(payload["files"].as_i).to eq(0)
       expect(payload["chunks"].as_i).to eq(0)
       expect(payload["ollama"]["model"].as_s).not_to be_empty
+      # null rather than absent: an empty index has no width yet, and the key
+      # being there is what lets a script tell "not embedded" from "old payload".
+      expect(payload["embedding_dim"].raw).to be_nil
     end
 
     it "reports a delete miss without failing" do

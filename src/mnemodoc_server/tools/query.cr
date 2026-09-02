@@ -40,6 +40,8 @@ module MnemodocServer
           raise MCP::ToolError.new("mode must be one of #{MODES.join(", ")} (got #{mode.inspect})")
         end
 
+        refuse_stale_vectors!(mode)
+
         started_at = Time.instant
 
         query_vec = build_query_vec(query, mode)
@@ -52,7 +54,12 @@ module MnemodocServer
         effective_config.recency_days = @config.search.recency_days
         effective_config.recency_boost = @config.search.recency_boost
         effective_config.keyword_weight = @config.search.keyword_weight
-        results = Search::Hybrid.new(effective_config, @qdrant_index).search(query, query_vec.as(Array(Float32)), @store)
+        results =
+          begin
+            Search::Hybrid.new(effective_config, @qdrant_index).search(query, query_vec.as(Array(Float32)), @store)
+          rescue ex : Store::EmbeddingDimMismatch
+            raise MCP::ToolError.new(ex.message || "embedding dimension mismatch")
+          end
         elapsed_ms = (Time.instant - started_at).total_milliseconds.to_i
 
         # Audit line, at info deliberately: this is the retrieval the whole
@@ -80,18 +87,35 @@ module MnemodocServer
           "mode"             => JSON::Any.new(mode),
         } of String => JSON::Any
 
-        # Warn when the stored embedding model differs from the active config;
-        # results will silently score near-zero because vector dimensions differ.
-        # The warnings array shape is shared with the advisory wrapper (Task 5).
+        # Only reachable in keyword mode now: the vector modes refuse outright
+        # above. A keyword answer is honest under a model change — it simply
+        # carries no semantic signal, and says so.
         if @store.model_mismatch?(@config.ollama.model)
           stored = @store.embedding_model || "unknown"
           current = @config.ollama.model
-          warning = "index built with model '#{stored}'; current config uses '#{current}' — re-index required"
+          warning = "index built with model '#{stored}'; current config uses '#{current}' — " \
+                    "this answer carries the keyword signal only; re-index to restore semantic search"
           Log.warn { warning }
           structured["warnings"] = JSON::Any.new([JSON::Any.new(warning)])
         end
 
         MCP::ToolResult.new(structured_content: JSON::Any.new(structured))
+      end
+
+      # Refuses the two vector modes when the index was built by another model.
+      #
+      # This used to return results with a `warnings` entry beside them — a
+      # hybrid search backed by nothing but its keyword half, which reads
+      # exactly like a working one to whatever asked. Keyword mode is
+      # unaffected and still answers, since it never touches a vector.
+      private def refuse_stale_vectors!(mode : String) : Nil
+        return if mode == "keyword"
+        return unless @store.model_mismatch?(@config.ollama.model)
+        stored = @store.embedding_model || "unknown"
+        raise MCP::ToolError.new(
+          "index was built with embedding model '#{stored}' and the configuration now uses " \
+          "'#{@config.ollama.model}': the stored vectors cannot be searched with this model. " \
+          "Re-index the project, or call this tool with mode=\"keyword\".")
       end
 
       # Returns the query embedding for semantic/hybrid modes, or an empty vector

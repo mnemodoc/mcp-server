@@ -647,3 +647,61 @@ Spectator.describe MnemodocServer::Indexer::Crawler do
     end
   end
 end
+
+# A vector of another width is not one file failing, it is the run being
+# impossible: every stored vector shares the width frozen in the vec0 table's
+# DDL. The per-file rescue used to absorb it into the `failed` tally, which is
+# the silent degradation the refusal exists to replace.
+Spectator.describe "crawler on a dimension mismatch" do
+  let(tmp_dir) { File.join(Dir.tempdir, "mnemodoc-crawler-dim-#{Random::Secure.hex(4)}") }
+  let(tmp_db) { File.join(Dir.tempdir, "mnemodoc-crawler-dim-#{Random::Secure.hex(4)}.db") }
+
+  before_each { Dir.mkdir_p(tmp_dir) }
+  after_each do
+    FileUtils.rm_rf(tmp_dir)
+    delete_db(tmp_db)
+  end
+
+  # A copy rather than a share: the helper above is private to its own describe.
+  private def fake_ollama(embedding : Array(Float32), &)
+    server = HTTP::Server.new do |ctx|
+      ctx.response.status_code = 200
+      ctx.response.content_type = "application/json"
+      body = ctx.request.body.try(&.gets_to_end) || ""
+      count = JSON.parse(body)["input"].as_a.size rescue 1
+      ctx.response.print({"embeddings" => Array.new(count, embedding)}.to_json)
+    end
+    addr = server.bind_tcp("127.0.0.1", 0)
+    spawn { server.listen }
+    Fiber.yield
+    begin
+      yield addr.port
+    ensure
+      server.close
+    end
+  end
+
+  it "aborts the run instead of counting the file as failed" do
+    File.write(File.join(tmp_dir, "a.md"), "# Title\n\nbody text\n")
+    File.write(File.join(tmp_dir, "b.md"), "# Other\n\nmore body text\n")
+
+    store = MnemodocServer::Store::SQLite.new(tmp_db)
+    # The index is fixed at 768; the model below answers 1024.
+    store.prepare_embedding_dim!(768)
+
+    fake_ollama(Array(Float32).new(1024, 0.1_f32)) do |port|
+      config = MnemodocServer::Config.from_yaml(
+        "paths:\n  - #{tmp_dir}\nollama:\n  host: http://127.0.0.1:#{port}\n")
+      embedder = MnemodocServer::Indexer::Embedder.new(config.ollama)
+      registry = MnemodocServer::Indexer::Format::Registry.new(config)
+      crawler = MnemodocServer::Indexer::Crawler.new([tmp_dir], registry, config.exclude)
+      begin
+        expect { crawler.run(store, embedder, MnemodocServer::SingleFlight.new, concurrency: 2) }
+          .to raise_error(MnemodocServer::Store::EmbeddingDimMismatch, /768/)
+      ensure
+        embedder.close
+        store.close
+      end
+    end
+  end
+end

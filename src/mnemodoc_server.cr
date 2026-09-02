@@ -242,11 +242,99 @@ module MnemodocServer
     nil
   end
 
+  # The width the Qdrant collection has already been ensured for, so the retry
+  # described on ensure_qdrant! costs a comparison rather than a round trip.
+  # Process-wide because the daemon is one process per project.
+  @@qdrant_ensured_dim : Int32? = nil
+
+  # Text embedded for the sole purpose of learning the model's vector width.
+  # Its content is irrelevant: only the size of what comes back is read.
+  DIM_PROBE_TEXT = "embedding dimension probe"
+
+  # Learns the configured model's vector width and hands it to the store, which
+  # adopts it or refuses the run.
+  #
+  # Called at the START of an indexing run, before the crawl. That placement is
+  # the point: the crawler rescues per file, so a mismatch discovered while
+  # writing a chunk comes back as a `failed` counter rather than as a failure —
+  # the same silent degradation this whole path exists to remove. One extra
+  # embedding call per run buys a refusal before anything is written.
+  #
+  # An unreachable model is NOT a probe failure, and returns nil rather than
+  # raising. The probe is here to catch a dimension mismatch, not to become a
+  # new liveness check on Ollama: that is already reported, by the crawler's
+  # `failed` counter and by `index`'s exit code, and turning it into a hard stop
+  # here would break two documented behaviours — a run with nothing to do still
+  # succeeds, and a run that could embed nothing still reports how many chunks
+  # failed. Nothing is lost by continuing: with no vectors produced, no vector
+  # of the wrong width can be written either.
+  #
+  # Only Store::EmbeddingDimMismatch escapes, which is the one condition the
+  # caller must stop on.
+  def self.probe_embedding_dim!(config : Config, store : Store::SQLite,
+                                embedder : Indexer::Embedder) : Int32?
+    # Nothing to learn, so nothing is asked. An index that already records a
+    # width, under the very model named in the configuration, cannot be about
+    # to meet a different one through any supported path — a model change goes
+    # through clear_index!, which releases the width along with the table.
+    #
+    # This is not an optimisation. Probing unconditionally made every daemon
+    # start contact Ollama even with nothing to index — a network call on a
+    # path that had none, and a startup left waiting on the model's
+    # responsiveness for an answer it did not need. spec/daemon_spec.cr states
+    # that invariant in its own header.
+    #
+    # The residual case — a model re-released at another width under the same
+    # name — is not lost: the width is checked again against every vector
+    # written, and Indexer::Crawler now lets that refusal abort the run rather
+    # than counting it as one failed file.
+    recorded = store.embedding_dim
+    return recorded if recorded && !store.model_mismatch?(config.ollama.model)
+
+    # first?, not first: a 200 carrying `{"embeddings": []}` is a case
+    # Embedder#embed_many tolerates on purpose, and `first` would answer it with
+    # an Enumerable::EmptyError that walks past every caller's rescue.
+    vector = embedder.embed_batch([DIM_PROBE_TEXT]).first?
+    if vector.nil? || vector.empty?
+      Log.warn { "the embedding model returned an empty vector; the dimension will be adopted at the first indexed chunk" }
+      return nil
+    end
+    store.prepare_embedding_dim!(vector.size)
+    vector.size
+  rescue ex : Indexer::EmbedderError
+    Log.warn { "could not probe the embedding dimension (#{ex.message}); it will be adopted at the first indexed chunk" }
+    nil
+  end
+
   # Ensures the Qdrant collection exists and backfills it from the durable
   # embedding BLOBs when its point count is behind the SQLite chunk count
-  # (best-effort; mirrors the vec0 startup backfill). Dim 768 = nomic-embed-text.
+  # (best-effort; mirrors the vec0 startup backfill).
+  #
+  # The width comes from the store, which took it from a vector the configured
+  # model really produced. It used to be the literal 768, so a collection was
+  # created for nomic-embed-text whatever the configured model was.
+  #
+  # Re-entrant, and it has to be: when the width is not known yet — Ollama down
+  # at startup, so the probe learned nothing — there is nothing to size a
+  # collection with, and the very next thing that produces a vector (the
+  # daemon's watcher, an ingest) would otherwise upsert into a collection that
+  # was never created. QdrantIndex swallows that failure and returns false, so
+  # the vectors would vanish without a word. Calling this again once a width
+  # exists is what closes that window; the ensure itself is idempotent, and the
+  # guard below keeps the repeat calls free.
   def self.ensure_qdrant!(index : Store::QdrantIndex, store : Store::SQLite) : Nil
-    index.ensure(768)
+    dim = store.embedding_dim
+    if dim.nil?
+      Log.warn { "qdrant: no embedding dimension known yet; the collection is created as soon as one is" }
+      return
+    end
+    # The guard covers the backfill below as well as the ensure, on purpose:
+    # `index.count` is an HTTP round trip, and this now runs on the watch path,
+    # once per changed file. Repeating it there would cost a request per save to
+    # re-answer a question settled at startup.
+    return if @@qdrant_ensured_dim == dim
+    index.ensure(dim)
+    @@qdrant_ensured_dim = dim
     chunk_count = store.chunk_count
     return unless (index.count || 0_i64) < chunk_count
     # Mirrors the vec0 backfill's INFO bracketing so a bulk Qdrant rebuild is
@@ -331,10 +419,18 @@ module MnemodocServer
       store.clear_index!
       qi.try(&.clear)
     end
+    probe_embedding_dim!(config, store, idx_embedder)
     qi.try { |index| ensure_qdrant!(index, store) }
     index_result = crawler.run(store, idx_embedder, sf, concurrency: config.index.concurrency)
     store.embedding_model = config.ollama.model
     Log.info { "startup indexing: #{index_result[:indexed]} indexed, #{index_result[:skipped]} skipped, #{index_result[:pruned]} pruned" }
+  rescue ex : Store::EmbeddingDimMismatch
+    # Surfaced as an advisory and not merely logged: this is precisely the state
+    # in which the index answers searches with its keyword signal alone, and
+    # Log.warn is invisible in several MCP clients — the agent would go on
+    # trusting a half-working index.
+    Advisories.add("indexing stopped: #{ex.message}")
+    Log.error { "startup indexing failed: #{ex.message}" }
   rescue ex
     Log.error { "startup indexing failed: #{ex.message}" }
   end
@@ -419,6 +515,10 @@ module MnemodocServer
       return
     end
     return unless registry.supported?(File.extname(path))
+    # Cheap after the first success, and the only chance a daemon that started
+    # without a reachable model gets to create its collection before writing to
+    # it. See ensure_qdrant!.
+    qi.try { |index| ensure_qdrant!(index, store) }
     Indexer::Crawler.new([path], registry, config.exclude, qdrant_index: qi)
       .run(store, embedder, sf, concurrency: 1)
     Log.info { "watch: re-indexed #{path}" }

@@ -335,6 +335,11 @@ module MnemodocServer
           puts "  config:  #{project[:config]}#{project[:config_written] ? "" : " (kept as it was)"}"
           puts "  indexed: #{indexed} file(s) in #{MnemodocServer.format_duration(elapsed)}"
         end
+      rescue ex : Store::EmbeddingDimMismatch
+        # `init` is re-runnable, so it can meet an index built at another width.
+        # That refusal is an outcome of this command and belongs in its error
+        # contract, not in an unhandled exception.
+        handle_error(ex, json: flags.json)
       rescue ex : Indexer::EmbedderError
         handle_error(ex, json: flags.json)
       ensure
@@ -348,6 +353,11 @@ module MnemodocServer
         embedder = Indexer::Embedder.new(config.ollama)
         registry = Indexer::Format::Registry.new(config)
         qi = MnemodocServer.qdrant_index(config)
+        # An unreachable Ollama is tolerated by the probe itself, which is what
+        # keeps the commitment above: a project can be initialised before Ollama
+        # is up, and the dimension is then adopted from the first vector
+        # actually written (Store::SQLite#adopt_dim_within).
+        MnemodocServer.probe_embedding_dim!(config, store, embedder)
         qi.try { |index| MnemodocServer.ensure_qdrant!(index, store) }
         crawler = Indexer::Crawler.new(config.resolved_paths, registry, config.exclude, qdrant_index: qi)
         result = with_indexing_progress(json: flags.json, quiet: flags.quiet) do |phases|
@@ -440,6 +450,10 @@ module MnemodocServer
               "to rebuild from scratch."),
             json: flags.json)
         end
+        # Before the crawl, deliberately: the crawler rescues per file, so a
+        # dimension refused while writing a chunk would be counted as a failed
+        # file instead of stopping the run.
+        MnemodocServer.probe_embedding_dim!(config, store, embedder)
         qi.try { |index| MnemodocServer.ensure_qdrant!(index, store) }
         started_at = Time.instant
         index_result = with_indexing_progress(json: flags.json, quiet: flags.quiet) do |phases|
@@ -476,6 +490,8 @@ module MnemodocServer
           end
           exit 1
         end
+      rescue ex : Store::EmbeddingDimMismatch
+        handle_error(ex, json: flags.json)
       rescue ex : Indexer::EmbedderError
         handle_error(ex, json: flags.json)
       ensure
@@ -507,6 +523,15 @@ module MnemodocServer
         config.search.top_k = flags.top
 
         store = MnemodocServer.open_store(config)
+        if flags.mode != "keyword" && store.model_mismatch?(config.ollama.model)
+          stored = store.embedding_model || "unknown"
+          handle_error(
+            Exception.new(
+              "index was built with embedding model '#{stored}' and the configuration now uses " \
+              "'#{config.ollama.model}': the stored vectors cannot be searched with this model. " \
+              "Re-index, or search with --mode keyword."),
+            json: flags.json)
+        end
         embedder = Indexer::Embedder.new(config.ollama)
 
         query_vec = embedder.embed_batch([arguments.query]).first
@@ -555,6 +580,10 @@ module MnemodocServer
           end
           puts table
         end
+      rescue ex : Store::EmbeddingDimMismatch
+        # Not degraded into a keyword-only answer: the mode asked for is what
+        # the caller will believe it got.
+        handle_error(ex, json: flags.json)
       rescue ex : Indexer::EmbedderError
         handle_error(ex, json: flags.json)
       ensure
@@ -581,12 +610,17 @@ module MnemodocServer
         files = store.list_files
 
         chunks = store.chunk_count
+        embedding_dim = store.embedding_dim
         payload = {
           version: MnemodocServer.version,
           db_path: config.db_path,
           files:   files.size,
           chunks:  chunks,
           ollama:  {host: config.ollama.host, model: config.ollama.model},
+          # Deliberately not folded into the `ollama` object: that one reports
+          # the configuration, this reports what the index actually holds, and
+          # the whole point of showing it is that the two can disagree.
+          embedding_dim: embedding_dim,
         }
         emit(payload, json: flags.json, quiet: false) do
           puts MnemodocServer.version_line
@@ -594,6 +628,7 @@ module MnemodocServer
           puts "Files indexed: #{files.size}"
           puts "Chunks: #{chunks}"
           puts "Ollama: #{config.ollama.host} (#{config.ollama.model})"
+          puts "Vectors: #{embedding_dim ? "#{embedding_dim} dimensions" : "none embedded yet"}"
         end
       ensure
         store.try(&.close)

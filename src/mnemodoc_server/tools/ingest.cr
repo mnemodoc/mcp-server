@@ -39,6 +39,16 @@ module MnemodocServer
             "(mnemodoc-server index) rather than ingesting a single path.")
         end
 
+        # Same reasoning one step further down: the model name can be unchanged
+        # while the model itself has been re-released at another vector width.
+        # Probing before the crawl turns that into a refusal rather than a run
+        # that indexes text and quietly stores no vectors.
+        begin
+          MnemodocServer.probe_embedding_dim!(@config, @store, @embedder)
+        rescue ex : Store::EmbeddingDimMismatch
+          raise MCP::ToolError.new(ex.message || "embedding dimension mismatch")
+        end
+
         # Index the file or directory exactly as given; the crawler handles
         # both, and a file is indexed as itself (not its whole parent dir).
         crawler = Indexer::Crawler.new([expanded], @registry, @config.exclude)
