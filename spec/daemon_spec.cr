@@ -149,6 +149,94 @@ Spectator.describe MnemodocServer::Daemon do
     end
   end
 
+  # The teardown's whole job: run_internal spawns four fibers that query the
+  # store, and closing a DB::Database under any of them is a use-after-free in
+  # libsqlite3 — a SIGSEGV, not an exception, so nothing rescues it. All three
+  # variants of that crash were found by CI rather than by this suite, in
+  # Collector#listen, Collector#purge_expired and Crawler#prune_stale. This is
+  # the guard that was missing.
+  describe "#run (shutdown while the index is held)" do
+    it "returns without crashing when a crawl is still holding the index" do
+      Dir.mkdir_p(File.join(tmp_dir, "doc"))
+      3.times do |index|
+        File.write(File.join(tmp_dir, "doc", "f#{index}.md"), "# Title #{index}\n\n## Section\n\nbody text\n")
+      end
+
+      # Accepts the connection and never answers, so the boot crawl parks inside
+      # its embedding call holding the store — exactly the state the teardown
+      # used to close the handle in.
+      hanging = HTTP::Server.new { |_ctx| sleep }
+      addr = hanging.bind_tcp("127.0.0.1", 0)
+      spawn { hanging.listen }
+      Fiber.yield
+
+      cfg = MnemodocServer::Config.from_yaml(<<-YAML)
+      paths:
+        - #{File.join(tmp_dir, "doc")}
+      ollama:
+        host: http://127.0.0.1:#{addr.port}
+        timeout: 60
+      db:
+        path: #{File.join(tmp_dir, "index.db")}
+      server:
+        log_level: error
+        daemon_idle_timeout: 600
+      YAML
+
+      daemon = MnemodocServer::Daemon.new(cfg)
+      ready = Channel(Nil).new(1)
+      finished = Channel(Nil).new(1)
+
+      begin
+        spawn do
+          daemon.run_with_ready_channel(ready)
+        ensure
+          finished.send(nil)
+        end
+
+        select
+        when ready.receive
+          # Bound and serving.
+        when timeout(10.seconds)
+          fail "the daemon never became ready"
+        end
+
+        daemon.stop
+
+        # THE discriminating assertion. Shutdown must still be in progress here,
+        # because the crawl it is waiting for cannot finish while the mock hangs.
+        # Without the wait, run returns at once — having closed the index under
+        # a fiber that is about to use it again — and this example is the only
+        # thing standing between that and a green suite.
+        select
+        when finished.receive
+          fail "the daemon returned while a crawl still held the index"
+        when timeout(500.milliseconds)
+          # Still waiting, as it should be.
+        end
+
+        # Release the crawl: its embedding call fails, background_index rescues,
+        # and the fiber reports itself out — which is what the teardown has been
+        # waiting for.
+        hanging.close
+
+        select
+        when finished.receive
+          # Unwound in order.
+        when timeout(30.seconds)
+          fail "the daemon did not return once the crawl was released"
+        end
+
+        expect(File.exists?(cfg.daemon_pid_path)).to be_false
+        expect(File.exists?(cfg.daemon_socket_path)).to be_false
+      ensure
+        # Idempotent: the body closes it as part of the sequence above, this
+        # only covers an example that failed before reaching that point.
+        hanging.close rescue nil
+      end
+    end
+  end
+
   describe "#run (idle shutdown)" do
     it "stops and removes the socket file after daemon_idle_timeout seconds" do
       daemon = start_daemon(idle_config)
