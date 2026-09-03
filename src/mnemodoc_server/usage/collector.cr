@@ -14,6 +14,9 @@ module MnemodocServer
       def initialize(@config : Config, @store : Store::SQLite)
         @server = nil.as(UNIXServer?)
         @stopping = false
+        # Closed by #stop, which is what lets the periodic sweep abandon its
+        # wait immediately instead of at the next tick.
+        @stop_signal = Channel(Nil).new
       end
 
       # Binds the socket and serves until #stop. One line per connection: read
@@ -47,6 +50,38 @@ module MnemodocServer
       def stop : Nil
         @stopping = true
         @server.try(&.close) rescue nil
+        @stop_signal.close rescue nil
+      end
+
+      # The periodic half of the collector: drain whatever was spooled while no
+      # daemon was listening, then sweep past the retention window, then wait —
+      # until #stop, and not one tick longer.
+      #
+      # This lived in Daemon#run_internal as a bare `loop` that consulted
+      # nothing, so it had no way to end. The daemon's teardown closed the store
+      # underneath it, and the next purge prepared a statement on a freed
+      # sqlite3 handle: a SIGSEGV inside libsqlite3, which the `rescue` in
+      # purge_expired cannot catch because a use-after-free is not an exception.
+      # It surfaced only under the multi-threaded suite, on amd64, at a rate
+      # that made it look like a flake — and it is the same shape as the
+      # unstoppable watcher loop that watch_and_index was already given a stop
+      # signal for.
+      #
+      # Owning the loop here rather than in the daemon is what makes the two
+      # halves stop together: #stop now ends the listener AND this sweep, so a
+      # caller has one thing to wait on before closing the store.
+      def sweep_until_stopped(interval : Time::Span) : Nil
+        until @stopping
+          import_spool
+          purge_expired
+          break if @stopping
+          select
+          when @stop_signal.receive?
+            break
+          when timeout(interval)
+            # Another round.
+          end
+        end
       end
 
       # Renames the spool, waits out in-flight writes, imports and deletes.

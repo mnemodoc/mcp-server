@@ -24,6 +24,32 @@ Spectator.describe MnemodocServer::Usage::Collector do
       elapsed_ms: 3, session: nil, agent: nil, files: files)
   end
 
+  # The periodic sweep used to be an unbounded `loop` in Daemon#run_internal,
+  # with no reference to the collector's stopping flag. Shutdown closed the
+  # store while that fiber slept, and its next purge prepared a statement on a
+  # freed sqlite3 handle — a SIGSEGV in libsqlite3, which no `rescue` can catch.
+  # Measured on CI: dev:spec-mt died in sqlite3HashFind, reached from
+  # Usage::Collector#purge_expired.
+  it "returns from the periodic sweep once it is stopped" do
+    collector = MnemodocServer::Usage::Collector.new(config, store)
+    done = Channel(Nil).new(1)
+    # An interval far longer than the test: stopping must interrupt the wait,
+    # not be noticed only at the next tick.
+    spawn do
+      collector.sweep_until_stopped(1.hour)
+      done.send(nil)
+    end
+    Fiber.yield
+
+    collector.stop
+    select
+    when done.receive
+      # Unwound, so the store can be closed safely after this point.
+    when timeout(5.seconds)
+      fail "the periodic sweep did not return after #stop"
+    end
+  end
+
   it "inserts an event delivered over the socket" do
     collector = MnemodocServer::Usage::Collector.new(config, store)
     ready = Channel(Nil).new

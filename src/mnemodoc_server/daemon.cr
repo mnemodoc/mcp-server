@@ -33,6 +33,39 @@ module MnemodocServer
 
     # Stops the daemon by stopping its transport. No-op when the transport has
     # not been bound yet. Intended for use in tests and for orderly shutdown.
+    # Spawns the collector's two fibers, each reporting to *done* as it unwinds.
+    #
+    # A separate method purely so *done* is a parameter: a channel first assigned
+    # in run_internal's body reads as nilable from inside a spawned block's
+    # `ensure`, and the teardown's whole correctness rests on those sends
+    # happening.
+    #
+    # The sweep belongs to the collector now. It used to be a bare `loop` inline
+    # in run_internal that consulted nothing and therefore never ended: shutdown
+    # closed the store while it slept, and its next purge prepared a statement
+    # on a freed sqlite3 handle. See Usage::Collector#sweep_until_stopped.
+    private def spawn_collector(collector : Usage::Collector, interval : Time::Span,
+                                done : Channel(Nil)) : Nil
+      spawn do
+        collector.listen
+      ensure
+        done.send(nil)
+      end
+      spawn do
+        collector.sweep_until_stopped(interval)
+      ensure
+        done.send(nil)
+      end
+    end
+
+    # How long the teardown waits for each collector fiber to unwind before
+    # closing the store regardless. Long enough for a query to finish, short
+    # enough that a wedged fiber does not hold a daemon shutdown open.
+    SHUTDOWN_GRACE = 5.seconds
+
+    # The listener and the periodic sweep.
+    COLLECTOR_FIBERS = 2
+
     def stop : Nil
       @transport.try(&.stop)
     end
@@ -44,6 +77,12 @@ module MnemodocServer
       store : Store::SQLite? = nil        # ameba:disable Lint/UselessAssign
       embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
       collector : Usage::Collector? = nil
+      # Both collector fibers report here as they unwind. The teardown waits on
+      # it before closing the store: setting a stopping flag is not enough on
+      # its own, since a fiber can already be inside a query when it is set.
+      # Declared nilable, like `store` above, because a variable first assigned
+      # in the body reads as nilable from `ensure`.
+      collector_done : Channel(Nil)? = nil
 
       # Opening the store also prepares the index directory (= the socket's
       # parent), which MCP::Http needs to exist before it can bind.
@@ -79,14 +118,8 @@ module MnemodocServer
       # daemon was listening, then the retention sweep, then both on a timer.
       if @config.usage.enabled?
         active_collector = collector = Usage::Collector.new(@config, active_store)
-        spawn { active_collector.listen }
-        spawn do
-          loop do
-            active_collector.import_spool
-            active_collector.purge_expired
-            sleep @config.usage.import_interval.seconds
-          end
-        end
+        collector_done = Channel(Nil).new(2)
+        spawn_collector(active_collector, @config.usage.import_interval.seconds, collector_done)
       end
 
       t = MCP::Http.new(
@@ -116,6 +149,23 @@ module MnemodocServer
       # removes its socket as it unwinds, and a fiber killed with the process
       # never unwinds. Symmetrical with the pid file above.
       collector.try(&.stop)
+      # Waited on, not merely signalled: #stop returns as soon as the flag is
+      # set and the socket is closed, while a fiber may still be inside a query.
+      # Closing the store under it is a use-after-free in libsqlite3, which
+      # crashes the process rather than raising. Bounded so a wedged fiber
+      # delays shutdown instead of preventing it.
+      if done = collector_done
+        # Two, always: spawn_collector starts exactly the listener and the sweep.
+        COLLECTOR_FIBERS.times do
+          select
+          when done.receive
+            # One of them is out.
+          when timeout(SHUTDOWN_GRACE)
+            Log.warn { "usage collector did not unwind within #{SHUTDOWN_GRACE}; closing the store anyway" }
+            break
+          end
+        end
+      end
       embedder.try(&.close)
       store.try(&.close)
     end
