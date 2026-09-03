@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-03
+
+### Added
+- **The vector width is now a property of the index, measured and reported.**
+  It is taken from an embedding the configured model really produced, recorded
+  as `meta.embedding_dim` beside `embedding_model`, and used to create the
+  sqlite-vec table. There is deliberately no `ollama.dimensions:` setting: the
+  width belongs to the model, and a second knob beside `ollama.model` would be
+  one more source of truth to desynchronise — a model → dimension table was
+  rejected for the same reason, since it would lie the day a model is
+  re-released at another size. `status` reports it, as `embedding_dim` in the
+  MCP tool and in `--json`, and as a `Vectors:` line in the text output; it is
+  null while nothing has been embedded, and the key is always present so a
+  reader can tell "no vectors yet" from an older payload that never carried it
+
+### Changed
+- **A model change is now refused rather than answered.** `query_documents` and
+  `mnemodoc-server search` fail with an explicit message in `hybrid` and
+  `semantic` modes instead of returning results with a warning beside them:
+  those results were ranked by the keyword signal alone while still calling
+  themselves hybrid, which is indistinguishable, to whatever asked, from a
+  working search. `keyword` mode still answers — it touches no vector — and
+  says what its answer is missing, on both surfaces. `index` and `ingest_path`
+  refuse for the same reason, rather than half-refilling an index whose stored
+  vectors are stale
+
+### Fixed
+- **A model whose vectors are a different width produced an index with no
+  vectors at all.** The sqlite-vec virtual table was declared `float[768]` in
+  the schema constant, so switching to a 1024-dimension model skipped every
+  vector insert, logged one WARN per chunk, exited 0, and left an index that
+  listed its files and answered `query_documents` with its keyword index alone.
+  Measured on a real corpus: 1 221 skipped inserts and a healthy-looking index.
+  sqlite-vec freezes the width in the table definition and offers no `ALTER`,
+  so a change of model is a destroy-recreate-re-embed cycle and the code now
+  treats it as one — `clear_index!` drops the table rather than emptying it,
+  since emptying would keep the width of the model being replaced and the
+  rebuild would meet a table frozen at the old size
+- **The daemon crashed on shutdown whenever a fiber still held the index.**
+  `run_internal` spawns four fibers that query the store — the boot crawl, the
+  watcher, the usage listener and its periodic sweep — and the teardown closed
+  the database without waiting for any of them. Closing a `DB::Database` under
+  a live fiber is a use-after-free in libsqlite3: it kills the process instead
+  of raising, so no `rescue` sees it and no assertion fails. Three separate CI
+  crashes, one in each of three of those fibers, were all this defect. The
+  watcher was also spawned without the stop channel it has always accepted, so
+  it could not end at all. All four now report as they unwind, the teardown
+  waits for them, and it declines to close the index when the wait times out —
+  leaking a handle in an exiting process costs nothing, while closing it under
+  a live fiber is the crash itself
+- **The daemon reported itself ready before its usage socket was bound.**
+  Readiness fired off the MCP socket alone, which promises nothing about the
+  journal's own, so a producer sending an event immediately after startup could
+  find nothing listening and spool instead. Both sockets are now bound before
+  the daemon announces itself, bounded — an unavailable journal must degrade
+  the journal, not the daemon
+- **`search --mode keyword` said nothing about an index built by another
+  model.** The warning existed only inside `Tools::Query`: the CLI reimplements
+  the search path rather than delegating to the tool, so the sentence was never
+  written there and the table came back as though the index were current, on
+  stdout, on stderr and in `--json` alike. It now lives in one place both
+  surfaces call, carried in a `warnings` array that is present and empty when
+  there is nothing to say, and printed to stderr in the human output so stdout
+  stays the results
+- **`search --mode keyword` required Ollama to be reachable.** The command
+  embedded its query before looking at the mode, so it failed outright whenever
+  the service was down — in the one mode that reads no vector, and the very
+  fallback the mismatch message recommends. Keyword search now makes no network
+  call at all and answers from the FTS5 index alone
+
 ## [1.3.1] - 2026-08-07
 
 ### Fixed
