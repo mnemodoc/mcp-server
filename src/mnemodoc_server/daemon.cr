@@ -45,11 +45,14 @@ module MnemodocServer
     # closed the store while it slept, and its next purge prepared a statement
     # on a freed sqlite3 handle. See Usage::Collector#sweep_until_stopped.
     private def spawn_collector(collector : Usage::Collector, interval : Time::Span,
-                                done : Channel(Nil)) : Nil
+                                done : Channel(Nil), ready : Channel(Nil)) : Nil
       spawn do
-        collector.listen
+        collector.listen(ready)
       ensure
         done.send(nil)
+        # Unblocks a startup still waiting when the listener never bound at all,
+        # rather than making it serve out the full grace period for nothing.
+        ready.close rescue nil
       end
       spawn do
         collector.sweep_until_stopped(interval)
@@ -119,7 +122,26 @@ module MnemodocServer
       if @config.usage.enabled?
         active_collector = collector = Usage::Collector.new(@config, active_store)
         collector_done = Channel(Nil).new(2)
-        spawn_collector(active_collector, @config.usage.import_interval.seconds, collector_done)
+        collector_ready = Channel(Nil).new(1)
+        spawn_collector(active_collector, @config.usage.import_interval.seconds,
+          collector_done, collector_ready)
+        # The daemon is not ready until BOTH of its sockets are bound. Firing
+        # on_ready off the MCP socket alone promised nothing about the usage
+        # one, so a producer that sent an event immediately after startup could
+        # find nothing listening and spool instead — and the spec asserting the
+        # socket exists after readiness failed intermittently under the
+        # multi-threaded scheduler, which is how this surfaced. Bounded, because
+        # a usage socket that cannot bind must degrade the journal, not the
+        # daemon: the collector logs it and producers keep spooling.
+        select
+        when collector_ready.receive?
+          # Bound, or the listener gave up and closed the channel — either way
+          # there is nothing left to wait for. receive?, not receive: the close
+          # in spawn_collector's ensure would make the latter raise here, inside
+          # startup, over a journal that is allowed to be unavailable.
+        when timeout(SHUTDOWN_GRACE)
+          Log.warn { "usage socket not bound within #{SHUTDOWN_GRACE}; serving without it" }
+        end
       end
 
       t = MCP::Http.new(
