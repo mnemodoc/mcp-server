@@ -33,6 +33,20 @@ module MnemodocServer
 
     # Stops the daemon by stopping its transport. No-op when the transport has
     # not been bound yet. Intended for use in tests and for orderly shutdown.
+    # Spawns a fiber that holds the store, reporting to *done* as it unwinds.
+    #
+    # A method, and not an inline `spawn ... ensure`, for the same reason as
+    # spawn_collector: a channel first assigned in run_internal's body reads as
+    # nilable from inside a spawned block's `ensure`, and the teardown's whole
+    # correctness rests on that send happening.
+    private def spawn_tracked(done : Channel(Nil), &block : -> Nil) : Nil
+      spawn do
+        block.call
+      ensure
+        done.send(nil)
+      end
+    end
+
     # Spawns the collector's two fibers, each reporting to *done* as it unwinds.
     #
     # A separate method purely so *done* is a parameter: a channel first assigned
@@ -69,6 +83,10 @@ module MnemodocServer
     # The listener and the periodic sweep.
     COLLECTOR_FIBERS = 2
 
+    # The boot crawl, the watcher, and the collector's two. The channel is sized
+    # for all of them so no fiber ever blocks on reporting its own exit.
+    TRACKED_FIBERS = 4
+
     def stop : Nil
       @transport.try(&.stop)
     end
@@ -80,12 +98,22 @@ module MnemodocServer
       store : Store::SQLite? = nil        # ameba:disable Lint/UselessAssign
       embedder : Indexer::Embedder? = nil # ameba:disable Lint/UselessAssign
       collector : Usage::Collector? = nil
-      # Both collector fibers report here as they unwind. The teardown waits on
-      # it before closing the store: setting a stopping flag is not enough on
-      # its own, since a fiber can already be inside a query when it is set.
+      # Every fiber that holds the store reports here as it unwinds, and the
+      # teardown waits for all of them before closing it.
+      #
+      # This is the invariant the whole shutdown rests on: run_internal spawns
+      # four fibers that query the store — the boot crawl, the watcher, the
+      # usage listener and its periodic sweep — and closing a DB::Database
+      # under any of them is a use-after-free in libsqlite3, which kills the
+      # process instead of raising. Measured three times on CI, each in a
+      # different one of them: Collector#listen, Collector#purge_expired, and
+      # Crawler#prune_stale reached from background_index.
+      #
       # Declared nilable, like `store` above, because a variable first assigned
       # in the body reads as nilable from `ensure`.
-      collector_done : Channel(Nil)? = nil
+      fibers_done : Channel(Nil)? = nil # ameba:disable Lint/UselessAssign
+      store_fibers = 0
+      watch_stop : Channel(Nil)? = nil
 
       # Opening the store also prepares the index directory (= the socket's
       # parent), which MCP::Http needs to exist before it can bind.
@@ -105,14 +133,23 @@ module MnemodocServer
       # concurrently, by the crawl and by the watcher.
       single_flight = SingleFlight.new
 
+      done = fibers_done = Channel(Nil).new(TRACKED_FIBERS)
+
       # Index configured paths in the background so the daemon is immediately
       # responsive; unchanged files are skipped via mtime so restarts are cheap.
-      spawn { MnemodocServer.background_index(@config, active_store, qi, single_flight) }
+      spawn_tracked(done) { MnemodocServer.background_index(@config, active_store, qi, single_flight) }
+      store_fibers += 1
 
       # Live re-index: watch the configured paths and pick up changes while the
-      # daemon runs. Dies with the process on shutdown (holds no external resource).
+      # daemon runs. It is given the stop channel it has always accepted and
+      # never received here, so it ends with the daemon rather than polling on
+      # against a store the teardown is about to close.
       if @config.server.daemon_watch?
-        spawn { MnemodocServer.watch_and_index(@config, active_store, qi, sf: single_flight) }
+        stop = watch_stop = Channel(Nil).new
+        spawn_tracked(done) do
+          MnemodocServer.watch_and_index(@config, active_store, qi, stop: stop, sf: single_flight)
+        end
+        store_fibers += 1
       end
 
       # The usage journal's own socket, beside the MCP one. Producers that
@@ -121,10 +158,10 @@ module MnemodocServer
       # daemon was listening, then the retention sweep, then both on a timer.
       if @config.usage.enabled?
         active_collector = collector = Usage::Collector.new(@config, active_store)
-        collector_done = Channel(Nil).new(2)
         collector_ready = Channel(Nil).new(1)
         spawn_collector(active_collector, @config.usage.import_interval.seconds,
-          collector_done, collector_ready)
+          done, collector_ready)
+        store_fibers += COLLECTOR_FIBERS
         # The daemon is not ready until BOTH of its sockets are bound. Firing
         # on_ready off the MCP socket alone promised nothing about the usage
         # one, so a producer that sent an event immediately after startup could
@@ -171,25 +208,40 @@ module MnemodocServer
       # removes its socket as it unwinds, and a fiber killed with the process
       # never unwinds. Symmetrical with the pid file above.
       collector.try(&.stop)
-      # Waited on, not merely signalled: #stop returns as soon as the flag is
-      # set and the socket is closed, while a fiber may still be inside a query.
-      # Closing the store under it is a use-after-free in libsqlite3, which
-      # crashes the process rather than raising. Bounded so a wedged fiber
-      # delays shutdown instead of preventing it.
-      if done = collector_done
-        # Two, always: spawn_collector starts exactly the listener and the sweep.
-        COLLECTOR_FIBERS.times do
+      # watch_and_index reads its stop channel through Channel#closed?, so
+      # closing it is the signal.
+      watch_stop.try { |channel| channel.close rescue nil }
+
+      # Waited on, not merely signalled. A stop flag is read between iterations,
+      # so a fiber told to stop can still be inside a query; closing the store
+      # under it is the use-after-free described above. Bounded, so a wedged
+      # fiber delays shutdown instead of preventing it.
+      unwound = true
+      if done = fibers_done
+        # `|| 0` because a variable first assigned in the body reads as nilable
+        # from `ensure`, exactly like the handles above.
+        (store_fibers || 0).times do
           select
           when done.receive
-            # One of them is out.
+            # One more is out.
           when timeout(SHUTDOWN_GRACE)
-            Log.warn { "usage collector did not unwind within #{SHUTDOWN_GRACE}; closing the store anyway" }
+            unwound = false
             break
           end
         end
       end
+
       embedder.try(&.close)
-      store.try(&.close)
+      # NOT closed when something is still holding it. Leaking a DB::Database
+      # in a process that is exiting costs nothing — SQLite checkpoints its WAL
+      # on exit and the OS reclaims the handles — whereas closing it under a
+      # live fiber is precisely the crash this teardown exists to prevent. The
+      # warning is what makes the leak visible rather than silent.
+      if unwound
+        store.try(&.close)
+      else
+        Log.warn { "a fiber still held the index after #{SHUTDOWN_GRACE}; leaving it open rather than closing it underneath" }
+      end
     end
   end
 end
