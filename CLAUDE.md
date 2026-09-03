@@ -214,7 +214,17 @@ the same standing approval without anyone deciding to.
 
 ### Machine-readable CLI output
 
-Every subcommand that returns a result accepts `--json` (one JSON object on stdout) — `index`, `search`, `outline`, `read`, `usage`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not. Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`).
+Every subcommand that returns a result accepts `--json` (one JSON object on stdout) — `index`, `search`, `outline`, `read`, `usage`, `status`, `delete`, `context`, `info`, `daemon status`, `daemon stop`. `serve` and `prompt-hook` do not. Errors under `--json` go to **stderr** as `{"error": "..."}` with stdout left empty and exit code 1, so parsing stdout can never swallow a failure. `search --json` uses the same key names as the `query_documents` tool (`file`, `heading`, `parent_heading`, `content`, `score`), plus a `warnings` array that is present and empty when there is nothing to say.
+
+**`search --mode keyword` makes no network call.** `CLI::Search` used to embed
+the query before looking at the mode, so the whole command failed whenever
+Ollama was down — including in the one mode that reads no vector, which is both
+the fallback the mismatch refusal recommends and the case this file leans on to
+justify probing the dimension at the start of an indexing run rather than at
+store open. `Tools::Query#build_query_vec` had always returned an empty vector
+there; the CLI reimplements the path and had not.
+
+**The stale-index warning is shared, not written twice.** `Search::StaleIndex.warning` is the one sentence both surfaces say when a `keyword` answer comes out of an index built by another embedding model, and it exists because the two had already drifted: `Tools::Query` carried it from the start while `CLI::Search` — which reimplements the search path rather than delegating to the tool, unlike `outline` and `read` — never grew it, so `search --mode keyword` returned its table as though the index were current. `CLI::Search` does not delegate on purpose: the tool's structured content is `chunks`/`total_candidates`/`query_time_ms` where the CLI's documented payload is `query`/`mode`/`top_k`/`results`, it does not carry `similarity` (the calibrated cosine the CLI deliberately exposes), and its messages are phrased for an MCP client (`mode="keyword"` rather than `--mode keyword`). The *refusal* raised in `hybrid`/`semantic` mode is deliberately NOT shared for that last reason — it names a gesture, and the gesture differs by surface.
 
 **Payloads evolve additively** — fields may be added, never removed or renamed. There is deliberately no schema version field.
 

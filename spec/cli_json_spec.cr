@@ -195,6 +195,96 @@ Spectator.describe "CLI machine output" do
       end
     end
 
+    private def write_search_config(port : Int32, model : String) : Nil
+      File.write(config_path, <<-YAML)
+      paths:
+        - doc/
+      ollama:
+        host: http://127.0.0.1:#{port}
+        model: #{model}
+      server:
+        log_level: error
+        daemon: false
+        daemon_watch: false
+      YAML
+    end
+
+    # A keyword answer under a changed model is honest — it touches no vector —
+    # but it is missing the semantic half, and the CLI said nothing about it.
+    # The MCP tool carried the warning from the start; this surface reimplements
+    # the search path rather than delegating, and the message was never written
+    # here, so `search --mode keyword` returned its table as if the index were
+    # current.
+    describe "a keyword answer on an index built by another model" do
+      it "carries the warning in the --json payload" do
+        with_mock_ollama do |port|
+          write_search_config(port, "model-a")
+          _, _, status = run_cli("index", File.join(tmp_dir, "doc"), "--config", config_path)
+          expect(status.success?).to be_true
+
+          write_search_config(port, "model-b")
+          stdout, _, status = run_cli("search", "body", "--mode", "keyword", "--config", config_path, "--json")
+          expect(status.success?).to be_true
+
+          warnings = JSON.parse(stdout)["warnings"].as_a.map(&.as_s)
+          expect(warnings.size).to eq(1)
+          expect(warnings.first).to contain("model-a")
+          expect(warnings.first).to contain("model-b")
+          expect(warnings.first).to contain("keyword signal only")
+        end
+      end
+
+      # stdout stays the result and nothing else, as it does for `read`: a
+      # caller piping the table must not find prose in it.
+      it "puts the warning on stderr and leaves stdout to the results" do
+        with_mock_ollama do |port|
+          write_search_config(port, "model-a")
+          run_cli("index", File.join(tmp_dir, "doc"), "--config", config_path)
+
+          write_search_config(port, "model-b")
+          stdout, stderr, status = run_cli("search", "body", "--mode", "keyword", "--config", config_path)
+          expect(status.success?).to be_true
+          expect(stderr).to contain("keyword signal only")
+          expect(stdout).not_to contain("keyword signal only")
+        end
+      end
+
+      # Nothing to say when the model is the one the index was built with.
+      it "says nothing when the model still matches" do
+        with_mock_ollama do |port|
+          write_search_config(port, "model-a")
+          run_cli("index", File.join(tmp_dir, "doc"), "--config", config_path)
+
+          stdout, stderr, status = run_cli("search", "body", "--mode", "keyword", "--config", config_path, "--json")
+          expect(status.success?).to be_true
+          expect(JSON.parse(stdout)["warnings"].as_a).to be_empty
+          expect(stderr).not_to contain("keyword signal only")
+        end
+      end
+    end
+
+    # Keyword search touches no vector, so it must not need the service that
+    # produces them. Two things rest on that: CLAUDE.md makes "the read-only
+    # tools, keyword search and init all work with Ollama down" the reason the
+    # dimension is probed at the start of an indexing run rather than at store
+    # open; and keyword is the fallback the refusal message recommends — one
+    # that requires the service just found wanting is not a fallback.
+    it "answers a keyword search from the index alone when Ollama is unreachable" do
+      with_mock_ollama do |port|
+        write_search_config(port, "model-a")
+        _, _, status = run_cli("index", File.join(tmp_dir, "doc"), "--config", config_path)
+        expect(status.success?).to be_true
+      end
+
+      # The mock is gone; port 1 is nothing at all.
+      write_search_config(1, "model-a")
+      stdout, stderr, status = run_cli("search", "body", "--mode", "keyword", "--config", config_path, "--json")
+
+      expect(status.success?).to be_true
+      expect(stderr).not_to contain("Ollama")
+      expect(JSON.parse(stdout)["results"].as_a.size).to be > 0
+    end
+
     it "mirrors the query_documents key vocabulary" do
       with_mock_ollama do |port|
         File.write(config_path, <<-YAML)

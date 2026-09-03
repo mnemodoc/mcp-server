@@ -89,12 +89,9 @@ module MnemodocServer
 
         # Only reachable in keyword mode now: the vector modes refuse outright
         # above. A keyword answer is honest under a model change — it simply
-        # carries no semantic signal, and says so.
-        if @store.model_mismatch?(@config.ollama.model)
-          stored = @store.embedding_model || "unknown"
-          current = @config.ollama.model
-          warning = "index built with model '#{stored}'; current config uses '#{current}' — " \
-                    "this answer carries the keyword signal only; re-index to restore semantic search"
+        # carries no semantic signal, and says so. The sentence is shared with
+        # the CLI, which said nothing at all until it was factored out.
+        if warning = Search::StaleIndex.warning(@store, @config)
           Log.warn { warning }
           structured["warnings"] = JSON::Any.new([JSON::Any.new(warning)])
         end

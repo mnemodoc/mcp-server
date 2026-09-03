@@ -532,9 +532,20 @@ module MnemodocServer
               "Re-index, or search with --mode keyword."),
             json: flags.json)
         end
-        embedder = Indexer::Embedder.new(config.ollama)
-
-        query_vec = embedder.embed_batch([arguments.query]).first
+        # No embedding, and no embedder at all, in keyword mode. Search::Hybrid
+        # only reads the query vector on its `hybrid`/`semantic` branch, so an
+        # empty one is what that mode actually needs — and asking Ollama for a
+        # vector nothing will read made the whole command fail whenever it was
+        # down. That is the state in which keyword search matters most: it is
+        # the fallback the refusal above recommends, and CLAUDE.md rests the
+        # placement of the dimension probe on keyword search working without
+        # Ollama. Tools::Query has answered this way from the start
+        # (build_query_vec); this surface reimplements the path and had not.
+        query_vec = [] of Float32
+        unless flags.mode == "keyword"
+          embedder = Indexer::Embedder.new(config.ollama)
+          query_vec = embedder.embed_batch([arguments.query]).first
+        end
         hybrid = MnemodocServer::Search::Hybrid.new(config.search, MnemodocServer.qdrant_index(config))
         results = hybrid.search(arguments.query, query_vec, store)
         # Diagnostic trace for tuning relevance; off at the default info level.
@@ -546,10 +557,20 @@ module MnemodocServer
           query: arguments.query, result_count: results.size, elapsed_ms: nil,
           files: results.map(&.chunk.file_path))
 
+        # Empty rather than absent when there is nothing to say: the key is
+        # then part of the schema in every response, so a reader can tell "no
+        # warning" from a payload predating the key. The same sentence the
+        # query_documents tool puts in its own `warnings`.
+        warnings = [] of String
+        # Fully qualified: inside `class Search`, a bare `Search::` resolves to
+        # this command, which is why the Hybrid call below spells it out too.
+        MnemodocServer::Search::StaleIndex.warning(store, config).try { |warning| warnings << warning }
+
         payload = {
-          query: arguments.query,
-          mode:  flags.mode,
-          top_k: flags.top,
+          query:    arguments.query,
+          mode:     flags.mode,
+          top_k:    flags.top,
+          warnings: warnings,
           # Same key names and rounding as the query_documents MCP tool, so both
           # surfaces speak one vocabulary.
           results: results.map do |search_result|
@@ -579,6 +600,9 @@ module MnemodocServer
             end
           end
           puts table
+          # stdout carries the results and nothing else, as it does for `read`:
+          # a caller piping this table must not find prose in it.
+          warnings.each { |warning| STDERR.puts warning }
         end
       rescue ex : Store::EmbeddingDimMismatch
         # Not degraded into a keyword-only answer: the mode asked for is what

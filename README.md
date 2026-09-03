@@ -297,7 +297,9 @@ $ mnemodoc-server status --json
 $ mnemodoc-server search "retry policy" --json | jq -r '.results[0].content'
 ```
 
-`search --json` carries the chunk bodies that the table omits, under the same key names as the `query_documents` MCP tool (`file`, `heading`, `parent_heading`, `content`, `score`) so both surfaces speak one vocabulary.
+`search --json` carries the chunk bodies that the table omits, under the same key names as the `query_documents` MCP tool (`file`, `heading`, `parent_heading`, `content`, `score`) so both surfaces speak one vocabulary. It also carries a `warnings` array — empty when there is nothing to say, and holding the same sentence the MCP tool puts in its own `warnings` when a keyword answer comes out of an index built by another embedding model. In the human output that sentence goes to **stderr**, leaving stdout to the table, as it does for `read`.
+
+`search --mode keyword` needs no Ollama at all: it reads the FTS5 index and never asks for a query vector. That is what makes it a usable fallback — the mode the mismatch message above points you to, and the one that still answers when the embedding service is down.
 
 **Errors** under `--json` are emitted as `{"error": "..."}` on **stderr**, with stdout left empty and exit code 1 — stdout only ever carries results, so parsing it cannot swallow a failure.
 
