@@ -86,3 +86,34 @@ Spectator.describe MnemodocServer::Hooks::ClaudeCode do
     end
   end
 end
+
+# How a prompt-hook answer reaches Claude Code. Plain text on stdout is added to
+# Claude's context but never shown to the user, and stderr from a hook exiting 0
+# goes to the debug log only; `systemMessage` in a JSON answer is the one field
+# shown to the user. So a notice forces the JSON form, and the passages then
+# travel in `additionalContext` rather than as plain text.
+Spectator.describe "Claude Code prompt-hook rendering" do
+  subject(adapter) { MnemodocServer::Hooks::ClaudeCode.new }
+
+  it "passes passages through as plain text when there is no notice" do
+    expect(adapter.render(passages: "<project-documentation>x</project-documentation>\n", notice: nil))
+      .to eq("<project-documentation>x</project-documentation>\n")
+  end
+
+  it "prints nothing when there is neither a passage nor a notice" do
+    expect(adapter.render(passages: "", notice: nil)).to eq("")
+  end
+
+  it "answers a notice alone with a systemMessage and no context" do
+    rendered = JSON.parse(adapter.render(passages: "", notice: "lookup skipped"))
+    expect(rendered.as_h.keys).to eq(["systemMessage"])
+    expect(rendered["systemMessage"].as_s).to eq("lookup skipped")
+  end
+
+  it "carries the passages in additionalContext when a notice accompanies them" do
+    rendered = JSON.parse(adapter.render(passages: "passage text\n", notice: "lookup restored"))
+    expect(rendered["systemMessage"].as_s).to eq("lookup restored")
+    expect(rendered["hookSpecificOutput"]["hookEventName"].as_s).to eq("UserPromptSubmit")
+    expect(rendered["hookSpecificOutput"]["additionalContext"].as_s).to eq("passage text\n")
+  end
+end

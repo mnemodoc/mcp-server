@@ -87,3 +87,25 @@ Spectator.describe MnemodocServer::Usage::UsageEvent do
     expect(back.result_count).to eq(2)
   end
 end
+
+# The outcome field arrived after events were already being spooled and sent,
+# so a line written by an older producer must still decode, and read as a
+# legacy event rather than as a failure or a decision.
+Spectator.describe "usage event outcome" do
+  it "decodes a line written before the outcome field existed" do
+    line = %({"at":100,"source":"hook","action":"prompt_hook","query":"q","result_count":0,"elapsed_ms":null,"session":null,"agent":null,"files":[]})
+    event = MnemodocServer::Usage::UsageEvent.from_json(line)
+    expect(event.outcome).to be_nil
+    expect(event.result_count).to eq(0)
+  end
+
+  it "round-trips an outcome through JSON" do
+    event = MnemodocServer::Usage::UsageEvent.new(
+      at: 100_i64, source: "hook", action: "prompt_hook", query: nil,
+      result_count: 0, elapsed_ms: 12, session: "s-1", agent: nil,
+      files: [] of String, outcome: "backend_error")
+    decoded = MnemodocServer::Usage::UsageEvent.from_json(event.to_json)
+    expect(decoded.outcome).to eq("backend_error")
+    expect(decoded.query).to be_nil
+  end
+end

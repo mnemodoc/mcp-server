@@ -846,13 +846,14 @@ module MnemodocServer
       private def emit_summary(store : Store::SQLite, since : Int64, days : Int32) : Nil
         summary = store.usage.summary(since)
         payload = {days: days, events: summary[:events], documents: summary[:documents],
-                   silent_hooks: summary[:silent_hooks],
+                   silent_hooks: summary[:silent_hooks], failed_hooks: summary[:failed_hooks],
                    by_source: summary[:by_source], by_action: summary[:by_action]}
         emit(payload, json: flags.json, quiet: false) do
           puts "Window: #{days} days"
           puts "Calls: #{summary[:events]}"
           puts "Documents served: #{summary[:documents]}"
           puts "Hook stayed silent: #{summary[:silent_hooks]} time(s)"
+          puts "Hook could not look: #{summary[:failed_hooks]} time(s)"
           summary[:by_action].each { |action, count| puts "  #{action}: #{count}" }
         end
       end
@@ -909,22 +910,44 @@ module MnemodocServer
     class PromptHook < Admiral::Command
       define_help description: "Read a client hook payload on stdin and inject the best matching passage"
 
+      # ameba:disable Lint/UselessAssign
       define_flag config : String, long: "config", short: "c", default: "", description: "Path to config file (default: discover the nearest .mnemodoc project)"
       # ameba:disable Lint/UselessAssign
       define_flag client : String, long: "client", default: "claude-code", description: "Hook client adapter (default claude-code)"
+      # ameba:disable Lint/UselessAssign
+      define_flag diagnostic : Bool, long: "diagnostic", default: false, description: "Write the hook's decision as one JSON line on stderr"
 
+      Log = ::Log.for("mnemodoc-server.prompt-hook")
+
+      # Every call ends on one outcome. A decision (`injected`, `below_threshold`,
+      # `no_results`) is recorded as such; a failure (`backend_error`,
+      # `invalid_payload`, `internal_error`) exits 0 all the same and injects
+      # nothing — this runs in the user's critical path and must never block the
+      # prompt — but it is no longer indistinguishable from a decision to stay
+      # silent: it is recorded apart, and the user is told once per session.
       def run
+        started = Time.instant
         store : Store::SQLite? = nil
         embedder : Indexer::Embedder? = nil
+        adapter : Hooks::Adapter? = nil
+        hook : Hooks::HookInput? = nil
+        config : Config? = nil
 
         payload = STDIN.gets_to_end
-        return if payload.strip.empty?
+        return diagnose("skipped") if payload.strip.empty?
 
-        hook = Hooks::Registry.for(flags.client).parse(JSON.parse(payload))
+        adapter = Hooks::Registry.for(flags.client)
+        hook = adapter.parse(JSON.parse(payload))
         prompt = hook.query
-        return if prompt.strip.empty?
+        return diagnose("skipped") if prompt.strip.empty?
 
         MnemodocServer.init_app!(flags.config)
+        # Registered once, globally, this hook runs in every repository a client
+        # opens. Outside a mnemodoc project there is nothing to look up — and a
+        # backend that project never uses being down is none of its business, so
+        # no embedding call is made and no notice can follow.
+        return diagnose("skipped") unless MnemodocServer.project_initialized?
+
         config = MnemodocServer.config
         store = MnemodocServer.open_store(config)
         embedder = Indexer::Embedder.new(config.ollama)
@@ -938,40 +961,105 @@ module MnemodocServer
           margin_threshold: config.hook.margin_threshold,
           max_passages: config.hook.max_passages)
 
-        # Recorded before the early return, deliberately: a hook that chose to
-        # stay silent is the event the usage summary reports as the silence
-        # rate, and returning first would make it unobservable.
+        outcome = if results.empty?
+                    "no_results"
+                  elsif chosen.empty?
+                    "below_threshold"
+                  else
+                    "injected"
+                  end
+
+        # Recorded before anything is printed, deliberately: a hook that chose
+        # to stay silent is the event the usage summary reports as the silence
+        # rate, and it must be recorded whatever the rendering does.
         Usage::Recorder.record(config, source: "hook", action: "prompt_hook",
-          query: prompt, result_count: chosen.size, elapsed_ms: nil,
+          query: prompt, result_count: chosen.size, elapsed_ms: elapsed_ms(started),
           files: chosen.map(&.chunk.file_path),
-          session: hook.session_id, agent: hook.agent_label.presence)
+          session: hook.session_id, agent: hook.agent_label.presence, outcome: outcome)
 
-        return if chosen.empty?
-
-        Log.for("mnemodoc-server.prompt-hook").info {
-          "injected #{chosen.size} passage(s): #{chosen.map(&.chunk.file_path).join(", ")}"
-        }
-        chosen.each { |passage| print_passage(passage) }
-      rescue
-        # Deliberately catch everything: this runs in the user's critical path
-        # and has no business surfacing any failure of ours to them.
+        unless chosen.empty?
+          Log.info { "injected #{chosen.size} passage(s): #{chosen.map(&.chunk.file_path).join(", ")}" }
+        end
+        diagnose(outcome, passages: chosen.size)
+        answer(adapter, outcome, passages: render_passages(chosen), session: hook.session_id, config: config)
+      rescue ex : JSON::ParseException
+        handle_failure("invalid_payload", ex, adapter, hook, config, started)
+      rescue ex : Indexer::EmbedderError
+        handle_failure("backend_error", ex, adapter, hook, config, started)
+      rescue ex
+        handle_failure("internal_error", ex, adapter, hook, config, started)
       ensure
         embedder.try(&.close)
         store.try(&.close)
       end
 
+      # A failure is recorded and announced without the prompt and without the
+      # exception's message: a parse error quotes the payload, and the payload
+      # is the prompt. The class name is enough to tell failures apart.
+      #
+      # Nothing here may raise: this is the rescue of the hook's critical path.
+      private def handle_failure(outcome : String, ex : Exception, adapter : Hooks::Adapter?,
+                                 hook : Hooks::HookInput?, config : Config?, started : Time::Instant?) : Nil
+        error_type = ex.class.name
+        if config
+          # Only once init_app! has completed: before setup_log!, Crystal's
+          # default log backend writes to STDOUT — the very stream the client
+          # reads the hook's answer from.
+          Log.warn { "prompt hook could not look: #{outcome} (#{error_type})" }
+          Usage::Recorder.record(config, source: "hook", action: "prompt_hook",
+            query: nil, result_count: 0, elapsed_ms: started.try { |instant| elapsed_ms(instant) }, files: [] of String,
+            session: hook.try(&.session_id), agent: hook.try(&.agent_label.presence), outcome: outcome)
+        end
+        diagnose(outcome, error_type: error_type)
+        return unless adapter
+        answer(adapter, outcome, passages: "", session: hook.try(&.session_id),
+          config: config || initialized_config, error_type: error_type)
+      rescue
+        # The notice is lost rather than the prompt blocked.
+      end
+
+      # The configuration that init_app! loaded before failing validation, when
+      # there is one: it still names the index directory where the per-session
+      # notice state lives, so a broken configuration is announced once per
+      # session rather than on every prompt.
+      private def initialized_config : Config?
+        MnemodocServer.project_initialized? ? MnemodocServer.config : nil
+      end
+
+      private def answer(adapter : Hooks::Adapter, outcome : String, passages : String,
+                         session : String?, config : Config?, error_type : String? = nil) : Nil
+        state_dir = config.try { |loaded| File.dirname(loaded.db_path) }
+        notice = Hooks::Notices.decide(outcome, state_dir: state_dir, session: session, error_type: error_type)
+        rendered = adapter.render(passages: passages, notice: notice)
+        print rendered unless rendered.empty?
+      end
+
+      private def diagnose(status : String, passages : Int32 = 0, error_type : String? = nil) : Nil
+        return unless flags.diagnostic
+        STDERR.puts({component: "mnemodoc.prompt-hook", status: status,
+                     passages: passages, error_type: error_type}.to_json)
+      end
+
+      private def elapsed_ms(started : Time::Instant) : Int32
+        (Time.instant - started).total_milliseconds.to_i
+      end
+
       # Framed and attributed so the model can tell this from the user's own
       # words, and can cite or discount it knowing where it came from.
-      private def print_passage(result : MnemodocServer::Search::SearchResult) : Nil
-        heading = result.chunk.heading.try(&.lstrip.lstrip('#').strip)
-        source = File.basename(result.chunk.file_path)
-        source += " › #{heading}" if heading && !heading.empty?
+      private def render_passages(chosen : Array(MnemodocServer::Search::SearchResult)) : String
+        String.build do |io|
+          chosen.each do |result|
+            heading = result.chunk.heading.try(&.lstrip.lstrip('#').strip)
+            source = File.basename(result.chunk.file_path)
+            source += " › #{heading}" if heading && !heading.empty?
 
-        puts "<project-documentation source=#{source.inspect}>"
-        puts "Retrieved from this project's indexed documentation because it matches the request."
-        puts
-        puts result.chunk.content
-        puts "</project-documentation>"
+            io.puts "<project-documentation source=#{source.inspect}>"
+            io.puts "Retrieved from this project's indexed documentation because it matches the request."
+            io.puts
+            io.puts result.chunk.content
+            io.puts "</project-documentation>"
+          end
+        end
       end
     end
 

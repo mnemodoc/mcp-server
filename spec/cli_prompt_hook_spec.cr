@@ -40,15 +40,20 @@ Spectator.describe "prompt-hook CLI" do
     YAML
   end
 
-  private def run_hook(prompt : String)
-    payload = {hook_event_name: "UserPromptSubmit", prompt: prompt}.to_json
+  private def run_hook(prompt : String, session : String? = nil, extra : Array(String) = [] of String)
+    payload = {hook_event_name: "UserPromptSubmit", prompt: prompt, session_id: session}.to_json
     stdout = IO::Memory.new
     stderr = IO::Memory.new
     status = Process.run("./bin/mnemodoc-server",
-      ["prompt-hook", "--config", config_path],
+      ["prompt-hook", "--config", config_path] + extra,
       input: IO::Memory.new(payload), output: stdout, error: stderr)
     {stdout.to_s, stderr.to_s, status}
   end
+
+  BACKEND_NOTICE  = "mnemodoc: documentation lookup skipped — the embedding backend did not answer (run `mnemodoc-server status`)."
+  PAYLOAD_NOTICE  = "mnemodoc: documentation lookup skipped — the hook payload could not be read."
+  CONFIG_NOTICE   = "mnemodoc: documentation lookup skipped — internal error (ArgumentError); see the mnemodoc log."
+  RESTORED_NOTICE = "mnemodoc: documentation lookup restored."
 
   private def index! : Nil
     Process.run("./bin/mnemodoc-server",
@@ -196,41 +201,125 @@ Spectator.describe "prompt-hook CLI" do
     end
   end
 
-  # Every failure mode below would, if it escaped, surface as noise or an error
-  # in front of the user on a turn that had nothing to do with documentation.
-  describe "never gets in the way" do
-    it "exits cleanly on unparseable stdin" do
+  # A failure never blocks the prompt: the hook still exits 0 and injects no
+  # passage. But it is no longer indistinguishable from a decision to stay
+  # silent — the user is told, through the one field Claude Code shows them.
+  describe "never gets in the way, but says when it could not look" do
+    it "exits cleanly on unparseable stdin, with a notice" do
       write_config
       index!
       stdout = IO::Memory.new
       status = Process.run("./bin/mnemodoc-server", ["prompt-hook", "--config", config_path],
         input: IO::Memory.new("not json at all"), output: stdout, error: Process::Redirect::Close)
       expect(status.success?).to be_true
-      expect(stdout.to_s).to be_empty
+      expect(JSON.parse(stdout.to_s)["systemMessage"].as_s).to eq(PAYLOAD_NOTICE)
     end
 
-    it "exits cleanly when Ollama is unreachable" do
+    it "exits cleanly when Ollama is unreachable, with a notice and no passage" do
       write_config(ollama: "http://127.0.0.1:1")
       stdout, _, status = run_hook("how do I exclude a directory from indexing?")
       expect(status.success?).to be_true
-      expect(stdout).to be_empty
+      answer = JSON.parse(stdout)
+      expect(answer.as_h.keys).to eq(["systemMessage"])
+      expect(answer["systemMessage"].as_s).to eq(BACKEND_NOTICE)
+      expect(stdout).not_to contain("exclude a directory")
     end
 
-    it "exits cleanly on an empty index" do
-      write_config
-      stdout, _, status = run_hook("how do I exclude a directory from indexing?")
-      expect(status.success?).to be_true
-      expect(stdout).to be_empty
+    # A working backend over an index with nothing in it: the search returns
+    # nothing, which is a decision, so there is nothing to announce.
+    it "exits cleanly on an empty index, silently" do
+      fake_ollama do |host|
+        write_config(ollama: host)
+        stdout, _, status = run_hook("how do I exclude a directory from indexing?")
+        expect(status.success?).to be_true
+        expect(stdout).to be_empty
+      end
     end
 
-    it "exits cleanly when the config file does not exist" do
+    it "exits cleanly when the config file does not exist, with a notice" do
       stdout = IO::Memory.new
       payload = {hook_event_name: "UserPromptSubmit", prompt: "anything"}.to_json
       status = Process.run("./bin/mnemodoc-server",
         ["prompt-hook", "--config", File.join(tmp_dir, "absent.yml")],
         input: IO::Memory.new(payload), output: stdout, error: Process::Redirect::Close)
       expect(status.success?).to be_true
+      expect(JSON.parse(stdout.to_s)["systemMessage"].as_s).to eq(CONFIG_NOTICE)
+    end
+
+    # The hook is registered once, globally, so it runs in every repository the
+    # client opens. Outside a mnemodoc project there is nothing to look up, and
+    # an outage of a backend that project never uses is none of its business.
+    it "stays silent outside a mnemodoc project, even with the backend down" do
+      outside = File.join(tmp_dir, "elsewhere")
+      Dir.mkdir_p(outside)
+      stdout = IO::Memory.new
+      payload = {hook_event_name: "UserPromptSubmit", prompt: "anything", session_id: "s-out"}.to_json
+      status = Process.run(File.expand_path("./bin/mnemodoc-server"), ["prompt-hook"],
+        input: IO::Memory.new(payload), output: stdout, error: Process::Redirect::Close,
+        chdir: outside, env: {"MNEMODOC_OLLAMA_HOST" => "http://127.0.0.1:1"})
+      expect(status.success?).to be_true
       expect(stdout.to_s).to be_empty
+    end
+  end
+
+  describe "notices across a session" do
+    it "shows a failure once per session, not on every prompt" do
+      write_config(ollama: "http://127.0.0.1:1")
+      first, _, _ = run_hook("first question about indexing", session: "sess-a")
+      second, _, status = run_hook("second question about indexing", session: "sess-a")
+      expect(JSON.parse(first)["systemMessage"].as_s).to eq(BACKEND_NOTICE)
+      expect(status.success?).to be_true
+      expect(second).to be_empty
+    end
+
+    it "does not let one session silence another" do
+      write_config(ollama: "http://127.0.0.1:1")
+      run_hook("a question", session: "sess-a")
+      other, _, _ = run_hook("a question", session: "sess-b")
+      expect(JSON.parse(other)["systemMessage"].as_s).to eq(BACKEND_NOTICE)
+    end
+
+    it "shows the recovery once, alongside the passage it injects" do
+      write_config(ollama: "http://127.0.0.1:1")
+      run_hook("how do I exclude a directory from indexing?", session: "sess-r")
+      fake_ollama do |host|
+        write_config(ollama: host)
+        index!
+        recovered, _, status = run_hook("how do I exclude a directory from indexing?", session: "sess-r")
+        expect(status.success?).to be_true
+        answer = JSON.parse(recovered)
+        expect(answer["systemMessage"].as_s).to eq(RESTORED_NOTICE)
+        expect(answer["hookSpecificOutput"]["hookEventName"].as_s).to eq("UserPromptSubmit")
+        expect(answer["hookSpecificOutput"]["additionalContext"].as_s).to contain("Glob patterns")
+
+        again, _, _ = run_hook("how do I exclude a directory from indexing?", session: "sess-r")
+        expect(again).to start_with("<project-documentation")
+        expect(again).to contain("Glob patterns")
+      end
+    end
+  end
+
+  describe "--diagnostic" do
+    it "writes the decision to stderr without the prompt" do
+      write_config(ollama: "http://127.0.0.1:1")
+      _, stderr, status = run_hook("how do I exclude a directory from indexing?", extra: ["--diagnostic"])
+      expect(status.success?).to be_true
+      line = stderr.lines.find!(&.includes?("mnemodoc.prompt-hook"))
+      decision = JSON.parse(line)
+      expect(decision["status"].as_s).to eq("backend_error")
+      expect(decision["passages"].as_i).to eq(0)
+      expect(decision["error_type"].as_s).to start_with("MnemodocServer::Indexer::Embedder")
+      expect(stderr).not_to contain("exclude a directory")
+    end
+
+    it "reports a decision to stay silent as a decision" do
+      fake_ollama do |host|
+        write_config(ollama: host)
+        index!
+        _, stderr, _ = run_hook("write me a haiku about cats", extra: ["--diagnostic"])
+        line = stderr.lines.find!(&.includes?("mnemodoc.prompt-hook"))
+        expect(JSON.parse(line)["status"].as_s).to eq("below_threshold")
+      end
     end
   end
 end

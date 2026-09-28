@@ -15,11 +15,17 @@ module MnemodocServer
       getter session : String?
       getter agent : String?
       getter files : Array(String)
+      # How a prompt-hook call ended: `injected`, `below_threshold` or
+      # `no_results` for a decision, `backend_error`, `invalid_payload` or
+      # `internal_error` for a failure. Nil for every other action, and for any
+      # event recorded before the field existed — a line an older producer
+      # spooled still decodes, as a legacy event.
+      getter outcome : String?
 
       def initialize(
         @at : Int64, @source : String, @action : String, @query : String?,
         @result_count : Int32, @elapsed_ms : Int32?, @session : String?,
-        @agent : String?, @files : Array(String),
+        @agent : String?, @files : Array(String), @outcome : String? = nil,
       )
       end
 

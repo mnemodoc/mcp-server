@@ -192,6 +192,30 @@ Spectator.describe "prompt hook recording" do
       expect(event.result_count).to eq(0)
       expect(event.query).to eq("how do I deploy")
       expect(event.session).to eq("s-42")
+      expect(event.outcome).to eq("no_results")
+      expect(event.elapsed_ms).not_to be_nil
     end
+  end
+
+  # An outage is recorded as what it is: a failure, apart from the silences, and
+  # without the prompt — the journal is not where a failing payload gets copied.
+  it "records a backend failure with its outcome and without the prompt" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture(1)
+    payload = {hook_event_name: "UserPromptSubmit", prompt: "how do I deploy",
+               session_id: "s-43"}.to_json
+
+    Process.run(binary, ["prompt-hook", "--config", config_path],
+      input: IO::Memory.new(payload),
+      output: Process::Redirect::Close, error: Process::Redirect::Close)
+
+    expect(File.exists?(spool)).to be_true
+    event = MnemodocServer::Usage::UsageEvent.from_json(File.read(spool).lines.first)
+    expect(event.action).to eq("prompt_hook")
+    expect(event.outcome).to eq("backend_error")
+    expect(event.query).to be_nil
+    expect(event.result_count).to eq(0)
+    expect(event.session).to eq("s-43")
+    expect(event.elapsed_ms).not_to be_nil
   end
 end

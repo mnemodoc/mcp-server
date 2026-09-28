@@ -116,3 +116,110 @@ Spectator.describe MnemodocServer::Store::Usage do
     expect(store.usage.summary(500_i64)[:events]).to eq(1)
   end
 end
+
+# Failures of the prompt hook are recorded, but they are not decisions: the hook
+# never reached the similarity gate. Counting them as silences would corrupt the
+# silence rate, and listing them as misses would blame the corpus for an outage.
+Spectator.describe "usage journal hook outcomes" do
+  let(tmp_db) { "/tmp/mnemodoc-usage-outcome-#{Random::Secure.hex(4)}.db" }
+  subject(store) { MnemodocServer::Store::SQLite.new(tmp_db) }
+
+  after_each do
+    store.close
+    delete_db(tmp_db)
+  end
+
+  private def hook_event(at : Int64, outcome : String?, query : String? = "q") : MnemodocServer::Usage::UsageEvent
+    MnemodocServer::Usage::UsageEvent.new(
+      at: at, source: "hook", action: "prompt_hook", query: query,
+      result_count: 0, elapsed_ms: 3, session: nil, agent: nil,
+      files: [] of String, outcome: outcome)
+  end
+
+  it "persists the outcome of an event" do
+    store.usage.insert(hook_event(100_i64, "backend_error", query: nil))
+    stored = store.@db.scalar("SELECT outcome FROM usage_events").as(String)
+    expect(stored).to eq("backend_error")
+  end
+
+  it "counts decisions and legacy events as silences, and failures apart" do
+    store.usage.insert(hook_event(100_i64, "below_threshold"))
+    store.usage.insert(hook_event(110_i64, "no_results"))
+    store.usage.insert(hook_event(120_i64, nil))
+    store.usage.insert(hook_event(130_i64, "backend_error", query: nil))
+    store.usage.insert(hook_event(140_i64, "internal_error", query: nil))
+    store.usage.insert(hook_event(150_i64, "invalid_payload", query: nil))
+    summary = store.usage.summary(0_i64)
+    expect(summary[:silent_hooks]).to eq(3)
+    expect(summary[:failed_hooks]).to eq(3)
+    expect(summary[:events]).to eq(6)
+  end
+
+  it "leaves failed hook calls out of the misses" do
+    store.usage.insert(hook_event(100_i64, "no_results", query: "real miss"))
+    store.usage.insert(hook_event(110_i64, "backend_error", query: nil))
+    misses = store.usage.misses(0_i64)
+    expect(misses.map(&.[:query])).to eq(["real miss"])
+  end
+end
+
+# An index built before the outcome column existed must gain it on open, keep
+# every recorded event readable, and read those events as legacy (NULL).
+Spectator.describe "usage journal migration" do
+  let(tmp_db) { "/tmp/mnemodoc-usage-migrate-#{Random::Secure.hex(4)}.db" }
+
+  after_each { delete_db(tmp_db) }
+
+  it "adds the outcome column to an existing journal without losing events" do
+    DB.open("sqlite3://#{tmp_db}") do |database|
+      database.exec(<<-SQL)
+        CREATE TABLE usage_events (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          at           INTEGER NOT NULL,
+          source       TEXT    NOT NULL,
+          action       TEXT    NOT NULL,
+          query        TEXT,
+          result_count INTEGER NOT NULL DEFAULT 0,
+          elapsed_ms   INTEGER,
+          session      TEXT,
+          agent        TEXT
+        )
+        SQL
+      database.exec("INSERT INTO usage_events (at, source, action, query, result_count) VALUES (100, 'hook', 'prompt_hook', 'old', 0)")
+    end
+
+    store = MnemodocServer::Store::SQLite.new(tmp_db)
+    begin
+      columns = [] of String
+      store.@db.query("PRAGMA table_info(usage_events)") do |result_set|
+        result_set.each do
+          result_set.read(Int64)
+          columns << result_set.read(String)
+          result_set.read(String)
+          result_set.read(Int64)
+          result_set.read(String?)
+          result_set.read(Int64)
+        end
+      end
+      expect(columns).to contain("outcome")
+      expect(store.usage.count).to eq(1_i64)
+      expect(store.@db.scalar("SELECT outcome FROM usage_events WHERE query = 'old'")).to be_nil
+      expect(store.usage.summary(0_i64)[:silent_hooks]).to eq(1)
+
+      store.usage.insert(MnemodocServer::Usage::UsageEvent.new(
+        at: 200_i64, source: "hook", action: "prompt_hook", query: nil,
+        result_count: 0, elapsed_ms: 1, session: nil, agent: nil,
+        files: [] of String, outcome: "backend_error"))
+      expect(store.usage.summary(0_i64)[:failed_hooks]).to eq(1)
+    ensure
+      store.close
+    end
+  end
+
+  # Two processes open the same index — the daemon and a CLI command — and both
+  # run the migration. The second must not fail on the column the first added.
+  it "opens an already-migrated journal again without error" do
+    MnemodocServer::Store::SQLite.new(tmp_db).close
+    expect { MnemodocServer::Store::SQLite.new(tmp_db).close }.not_to raise_error
+  end
+end

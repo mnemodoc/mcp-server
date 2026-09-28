@@ -120,7 +120,8 @@ module MnemodocServer
           result_count INTEGER NOT NULL DEFAULT 0,
           elapsed_ms   INTEGER,
           session      TEXT,
-          agent        TEXT
+          agent        TEXT,
+          outcome      TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_usage_at ON usage_events(at);
@@ -726,9 +727,47 @@ module MnemodocServer
           stmt = stmt.strip
           @db.exec(stmt) unless stmt.empty?
         end
+        add_missing_columns!
         adopt_recorded_dim!
         backfill_vec_chunks if @vec0 && vec_ready?
         backfill_fts_chunks
+      end
+
+      # Columns added after a table first shipped. `CREATE TABLE IF NOT EXISTS`
+      # leaves an existing table untouched, so an index built by an earlier
+      # version never receives them without this. Each is nullable, which keeps
+      # older binaries working against a migrated index: they name the columns
+      # they insert, and never see the new one.
+      ADDED_COLUMNS = [
+        {table: "usage_events", column: "outcome", type: "TEXT"},
+      ]
+
+      private def add_missing_columns! : Nil
+        ADDED_COLUMNS.each do |spec|
+          next if column_exists?(spec[:table], spec[:column])
+          begin
+            @db.exec("ALTER TABLE #{spec[:table]} ADD COLUMN #{spec[:column]} #{spec[:type]}")
+          rescue ex : SQLite3::Exception
+            # The daemon and a CLI command can open the same index at once, and
+            # both migrate: the loser finds the column already added.
+            raise ex unless column_exists?(spec[:table], spec[:column])
+          end
+        end
+      end
+
+      private def column_exists?(table : String, column : String) : Bool
+        found = false
+        @db.query("PRAGMA table_info(#{table})") do |result_set|
+          result_set.each do
+            result_set.read(Int64)
+            found = true if result_set.read(String) == column
+            result_set.read(String)
+            result_set.read(Int64)
+            result_set.read(String?)
+            result_set.read(Int64)
+          end
+        end
+        found
       end
 
       # Restores @vec_dim from what the database already knows, and reconciles

@@ -58,7 +58,24 @@ Spectator.describe "usage CLI command" do
     parsed = JSON.parse(result[:out])
     expect(parsed["events"].as_i).to eq(2)
     expect(parsed["silent_hooks"].as_i).to eq(1)
+    expect(parsed["failed_hooks"].as_i).to eq(0)
     expect(parsed["documents"].as_i).to eq(1)
+  end
+
+  it "reports hook failures apart from silences" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    write_fixture
+    store = MnemodocServer::Store::SQLite.new(db_path)
+    store.usage.insert(MnemodocServer::Usage::UsageEvent.new(
+      at: Time.utc.to_unix, source: "hook", action: "prompt_hook", query: nil,
+      result_count: 0, elapsed_ms: 2, session: nil, agent: nil,
+      files: [] of String, outcome: "backend_error"))
+    store.close
+    parsed = JSON.parse(run_cli(["--json"])[:out])
+    expect(parsed["silent_hooks"].as_i).to eq(1)
+    expect(parsed["failed_hooks"].as_i).to eq(1)
+    text = run_cli([] of String)[:out]
+    expect(text).to contain("Hook could not look: 1 time(s)")
   end
 
   it "lists the served documents" do

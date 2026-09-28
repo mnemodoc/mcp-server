@@ -6,6 +6,30 @@ module MnemodocServer
     # event shares the attribution fields (session_id, agent_id/agent_type,
     # transcript_path, cwd). Unknown events yield attribution only.
     class ClaudeCode < Adapter
+      # Plain text on a UserPromptSubmit hook's stdout is added to Claude's
+      # context and shown to no one, and stderr from a hook exiting 0 goes to
+      # the debug log only. `systemMessage` is the one field Claude Code shows
+      # the user, and it only exists in the JSON form — so a notice switches
+      # the answer to JSON, and the passages then travel in
+      # `additionalContext`. Without a notice the plain form is kept unchanged.
+      def render(passages : String, notice : String?) : String
+        return passages unless notice
+
+        JSON.build do |json|
+          json.object do
+            json.field "systemMessage", notice
+            unless passages.empty?
+              json.field "hookSpecificOutput" do
+                json.object do
+                  json.field "hookEventName", "UserPromptSubmit"
+                  json.field "additionalContext", passages
+                end
+              end
+            end
+          end
+        end
+      end
+
       def parse(json : JSON::Any) : HookInput
         # The payload is whatever the client sent. JSON::Any#[]? reads as the
         # lenient accessor but raises on a receiver that is neither a hash nor

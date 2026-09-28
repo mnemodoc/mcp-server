@@ -11,7 +11,7 @@ module MnemodocServer
       # documentation.
       def self.record(config : Config, source : String, action : String, query : String?,
                       result_count : Int32, elapsed_ms : Int32?, files : Array(String),
-                      session : String? = nil, agent : String? = nil) : Nil
+                      session : String? = nil, agent : String? = nil, outcome : String? = nil) : Nil
         return unless config.usage.enabled?
 
         # Deduplicated here, once, rather than by each caller: a document served
@@ -19,7 +19,7 @@ module MnemodocServer
         Transport.send(config, UsageEvent.new(
           at: Time.utc.to_unix, source: source, action: action, query: query,
           result_count: result_count, elapsed_ms: elapsed_ms,
-          session: session, agent: agent, files: files.uniq,
+          session: session, agent: agent, files: files.uniq, outcome: outcome,
         ))
       rescue ex
         Log.debug { "usage recording failed: #{ex.message}" }

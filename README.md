@@ -262,9 +262,18 @@ the agent thinks to look.
 is the cosine similarity of the best passage against
 `hook.similarity_threshold` (default `0.515`) — not the search score, which is a
 rank artifact that looks the same for an off-topic query as for a targeted one.
-Below the threshold, on unparseable input, with Ollama down, on an empty index
-or a missing config: it prints nothing and exits 0. A hook that errors in front
-of the user on an unrelated turn is worse than one that says nothing.
+Below the threshold or on an empty index it prints nothing and exits 0.
+
+**When it cannot look at all, it says so — once.** Ollama down, an unreadable
+payload, a broken configuration: the hook still exits 0 and injects nothing, so
+the prompt is never blocked, but it is no longer indistinguishable from a
+decision to stay silent. It answers with a JSON `systemMessage`, the one hook
+field Claude Code shows the user — plain stdout goes to the model only, and
+stderr from a hook exiting 0 goes to the debug log only. The notice is shown
+once per session and per kind of failure, and the recovery is announced once
+too. Outside a mnemodoc project the hook does nothing at all, not even an
+embedding call: it is registered globally, and a backend that project never uses
+is none of its business.
 
 **How many passages it injects adapts to how sure the ranking is.** When the
 runner-up sits within `hook.margin_threshold` (default `0.02`) of the best
@@ -415,7 +424,14 @@ mnemodoc-server prompt-hook --config /path/to/project/.mnemodoc.yml || true
 
 It gates on **cosine similarity**, not on the fused search score — the latter is a rank artifact, identical for the top hit of an off-topic query and of a targeted one. `hook.similarity_threshold` decides whether to inject at all; `hook.margin_threshold` decides how many, a runner-up within that distance meaning the ranking is not decisive; `hook.max_passages` caps the set. Every default is measured on the benchmark corpus rather than chosen — `mise bench:tokens` reports the firing rate, the false-firing rate on off-topic prompts, and how often the injected set actually contains the answer. Re-calibrate per corpus.
 
-Every failure path is silent and exits 0 by design: this runs synchronously in front of the user, and a hook that errors on an unrelated turn is worse than one that says nothing.
+Every path exits 0 by design: this runs synchronously in front of the user, and a hook that blocks an unrelated turn is worse than one that says nothing. A failure injects nothing and is announced once per session through a `systemMessage` (see [Injecting documentation before the agent asks](#injecting-documentation-before-the-agent-asks)); the notice never quotes the prompt or an exception message, since a parse error's message quotes the payload and the payload is the prompt.
+
+`--diagnostic` writes the decision as one JSON line on stderr, for debugging from a terminal — `status` is one of `injected`, `below_threshold`, `no_results`, `backend_error`, `invalid_payload`, `internal_error` or `skipped` (no prompt, or no project):
+
+```bash
+echo '{"hook_event_name":"UserPromptSubmit","prompt":"how do I deploy?"}' | mnemodoc-server prompt-hook --diagnostic
+# stderr: {"component":"mnemodoc.prompt-hook","status":"backend_error","passages":0,"error_type":"MnemodocServer::Indexer::EmbedderUnreachable"}
+```
 
 ### The usage journal
 
@@ -424,7 +440,7 @@ which documents are actually served, which have never been served, and which
 questions come back empty. Those are joins, not greps.
 
 ```bash
-mnemodoc-server usage                      # calls, documents served, hook silence rate
+mnemodoc-server usage                      # calls, documents served, hook silences and failures
 mnemodoc-server usage --documents          # most served first
 mnemodoc-server usage --unused             # indexed and never served in the window
 mnemodoc-server usage --misses             # searches that returned nothing, with the question
@@ -436,7 +452,11 @@ not gaps in the corpus and do not appear there.
 
 Everything that serves a document is recorded: MCP tool calls, the equivalent
 CLI subcommands, and the prompt hook — including the times the hook chose to
-stay **silent**, which is a figure no other source reports. `--unused` separates
+stay **silent**, which is a figure no other source reports, and apart from them
+the times it **could not look** (backend down, unreadable payload, internal
+error). A failure is not a silence and not a miss: it never reached the
+similarity gate, so it is counted on its own and kept out of `--misses`, and it
+is recorded without the prompt. `--unused` separates
 documents that were present for the whole window from those indexed too
 recently to judge, so a document added yesterday never reads as dead weight.
 
@@ -502,6 +522,55 @@ in for what the build could not know: a line that disappears reads as a
 rendering bug. `info --json` carries the same five keys.
 
 `mnemodoc-server info --licenses` prints the third-party licence texts baked into the binary — the notices its statically linked dependencies require when the binary is redistributed on its own.
+
+### Upgrading past 1.4.0, and rolling back
+
+The build after 1.4.0 brings two things an upgrade has to carry: the
+`when_query_regex` / `unless_query_regex` role keys, and an `outcome` column in
+the usage journal. Both are additive, and both were replayed end to end — on a
+copy of a real project's index and configuration — before being written down
+here.
+
+**A running daemon keeps the configuration and the binary it started with.**
+Measured: after an edit to `.mnemodoc.yml`, the `context` CLI answers with the
+new rules at once, while `get_project_context` — served by the daemon — keeps
+answering with the old ones. The same holds for a new binary. So an upgrade, a
+rollback, or a mere configuration change ends with, in each project directory:
+
+```bash
+mnemodoc-server daemon stop    # the next MCP call spawns a fresh daemon
+```
+
+**Adopting:**
+
+1. Install the new binary, then check what will serve: `mnemodoc-server info`,
+   and the `version` field of the MCP `status` tool once a client reconnects —
+   it must name the same commit. The second check is the one that counts: a
+   client can ship its own copy of the binary (the Zed extension does, under its
+   own extensions directory), and the daemon a project runs is spawned by
+   whichever binary reached it first.
+2. In each project, run `mnemodoc-server daemon stop`, then send the same query
+   through the `context` CLI and through `get_project_context`: the two must
+   name the same role.
+3. Only then add `when_query_regex` / `unless_query_regex` to a project's
+   configuration. **1.4.0 ignores these keys without a word**, so adding them
+   first changes nothing and looks like success.
+
+The journal migrates itself on the first open by the new binary (`ALTER TABLE
+usage_events ADD COLUMN outcome`). Existing events are kept and read as legacy
+decisions.
+
+**Rolling back:**
+
+1. Remove `when_query_regex` and `unless_query_regex` from the configuration.
+2. Reinstall the previous binary.
+3. In each project, run `mnemodoc-server daemon stop`.
+
+1.4.0 keeps working against a migrated index — it names the columns it inserts
+and never reads `outcome` — and imports spooled events written by the newer
+build. What a rollback costs: prompt-hook failures are silent again, and are
+counted as silences by `usage`; events imported by a 1.4.0 daemon lose their
+`outcome`.
 
 ### Environment overrides
 

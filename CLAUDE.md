@@ -133,9 +133,10 @@ src/mnemodoc_server/
     selector.cr                    Contextual-role selection (B3 cascade: weighted rules + semantic tie-break, shortlist restricted to roles that matched, word-boundary keyword matchers compiled once)
   hooks/
     input.cr                       HookInput struct: normalised client-agnostic hook payload
-    adapter.cr                     Adapter interface (parse JSON::Any → HookInput; never raises on keys)
+    adapter.cr                     Adapter interface (parse JSON::Any → HookInput, never raises on keys; render the prompt hook's stdout)
     registry.cr                    client name → adapter; default claude-code; unknown client raises
-    claude_code.cr                 Claude Code adapter (PreToolUse → files, UserPromptSubmit → query, + attribution)
+    claude_code.cr                 Claude Code adapter (PreToolUse → files, UserPromptSubmit → query, + attribution; plain passages, or JSON systemMessage/additionalContext when a notice is due)
+    notices.cr                     Prompt-hook failure/recovery notices, once per session and per failure (one state file per session under the index dir)
   tools/
     query.cr                       query_documents MCP tool
     ingest.cr                      ingest_path MCP tool
@@ -362,7 +363,7 @@ come back empty. Those are joins.
 the largest supplier of served passages — a measured session showed 1 539
 `UserPromptSubmit` against a handful of tool calls — so a journal without it
 would invert the picture it exists to give. But it runs synchronously before
-every user message under a standing "fail silently, exit 0" rule, which is why
+every user message under a standing "never block, exit 0" rule, which is why
 the send is bounded and fire-and-forget rather than a write.
 
 **Why a second socket rather than the daemon's own.** Both of the `mcp` shard's
@@ -414,11 +415,22 @@ either surface reports the same number.
 without the filter, the one view meant to reveal gaps in the corpus filled with
 calls that were never searching, and an agent calls `status` routinely.
 
-**Silence is data.** A `result_count` of zero from the hook means the similarity
-gate decided not to inject, and `usage` reports it as the silence rate.
-Ollama being unreachable is *not* recorded as silence: the hook raises before it
-reaches a decision, and conflating an outage with a decision would corrupt the
-one figure this view exists for.
+**Silence is data, and so is failure — apart.** Every prompt-hook event carries
+an `outcome`: `injected`, `below_threshold` or `no_results` for a decision,
+`backend_error`, `invalid_payload` or `internal_error` for a failure. A failure
+never reached the similarity gate, so it is counted as `failed_hooks`, kept out
+of `silent_hooks` and out of `misses` — conflating an outage with a decision
+would corrupt the one figure this view exists for — and it is recorded without
+the prompt. A NULL outcome is a legacy event, recorded before failures were
+recorded at all, and reads as a decision.
+
+**The column arrived after the table shipped.** `CREATE TABLE IF NOT EXISTS`
+never touches an existing table, so `Store::SQLite::ADDED_COLUMNS` lists the
+columns added since, and `migrate!` adds the missing ones with `ALTER TABLE`.
+Each is nullable, so an older binary keeps working against a migrated index (it
+names the columns it inserts), and a lost race between the daemon and a CLI
+command migrating at once is tolerated. A spooled line without `outcome` still
+decodes; a newer line read by an older daemon loses the field, not the event.
 
 ### Role selection on a weak signal
 
@@ -524,8 +536,22 @@ normalised at index time and Ollama returns unit vectors, so `cos = 1 - L2²/2`
 inverts exactly. Note the Qdrant backend returns its own metric: a threshold
 calibrated on vec0 does not transfer to it unmatched.
 
-Every failure path is silent-and-exit-0 by design: this runs synchronously in
-the user's critical path.
+Every path exits 0: this runs synchronously in the user's critical path, and a
+failure must never block the prompt. But a failure is no longer silent. It
+injects nothing and answers with a JSON `systemMessage` — the one hook field
+Claude Code shows the user, since plain stdout reaches only the model and
+stderr from a hook exiting 0 goes to the debug log only. `Hooks::Notices`
+shows it once per session and per failure, and announces the recovery once;
+the rendering belongs to the client adapter (`Adapter#render`), so the CLI stays
+client-agnostic. Notices never quote the prompt or an exception message — a
+parse error's message quotes the payload, which is the prompt.
+
+Two traps shaped the code. Outside an initialised project the hook returns
+before embedding anything: it is registered globally, so otherwise an Ollama
+outage would put a notice on every prompt of every unrelated repository. And a
+failure is logged only once `init_app!` has completed: before `setup_log!`,
+Crystal's default log backend writes to STDOUT, the stream the client reads the
+answer from. `--diagnostic` writes the decision as one JSON line on stderr.
 
 ## MCP tools exposed
 

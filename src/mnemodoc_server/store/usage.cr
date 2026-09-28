@@ -14,10 +14,10 @@ module MnemodocServer
           @db.transaction do |tx|
             cnn = tx.connection
             cnn.exec(
-              "INSERT INTO usage_events (at, source, action, query, result_count, elapsed_ms, session, agent) " \
-              "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+              "INSERT INTO usage_events (at, source, action, query, result_count, elapsed_ms, session, agent, outcome) " \
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
               event.at, event.source, event.action, event.query,
-              event.result_count, event.elapsed_ms, event.session, event.agent
+              event.result_count, event.elapsed_ms, event.session, event.agent, event.outcome
             )
             id = cnn.scalar("SELECT last_insert_rowid()").as(Int64)
             event.files.each do |path|
@@ -38,20 +38,32 @@ module MnemodocServer
         @db.scalar("SELECT COUNT(*) FROM usage_events").as(Int64)
       end
 
+      # The prompt-hook outcomes that are failures rather than decisions: the
+      # hook never reached its similarity gate. Kept out of the silences and out
+      # of the misses — an outage is not the corpus having nothing to say.
+      FAILED_OUTCOMES = MnemodocServer::Hooks::Notices::FAILURES
+
+      # Matches an event that is not a failure. A NULL outcome is a legacy event
+      # recorded before failures were recorded at all, so it was a decision.
+      NOT_FAILED = "(outcome IS NULL OR outcome NOT IN (#{FAILED_OUTCOMES.map { |outcome| "'#{outcome}'" }.join(", ")}))"
+
       # Headline figures for the window: how many calls, split by source and by
-      # action, how many distinct documents were served, and how often the hook
-      # chose to stay silent — the last being the one figure no other source can
-      # report.
-      def summary(since : Int64) : {events: Int32, by_source: Hash(String, Int32), by_action: Hash(String, Int32), documents: Int32, silent_hooks: Int32}
+      # action, how many distinct documents were served, how often the hook
+      # chose to stay silent — the one figure no other source can report — and
+      # how often it could not look at all.
+      def summary(since : Int64) : {events: Int32, by_source: Hash(String, Int32), by_action: Hash(String, Int32), documents: Int32, silent_hooks: Int32, failed_hooks: Int32}
         events = @db.scalar("SELECT COUNT(*) FROM usage_events WHERE at >= ?", since).as(Int64).to_i
         documents = @db.scalar(
           "SELECT COUNT(DISTINCT f.file_path) FROM usage_event_files f " \
           "JOIN usage_events e ON e.id = f.event_id WHERE e.at >= ?", since).as(Int64).to_i
         silent = @db.scalar(
-          "SELECT COUNT(*) FROM usage_events WHERE at >= ? AND source = 'hook' AND result_count = 0",
+          "SELECT COUNT(*) FROM usage_events WHERE at >= ? AND source = 'hook' AND result_count = 0 AND #{NOT_FAILED}",
+          since).as(Int64).to_i
+        failed = @db.scalar(
+          "SELECT COUNT(*) FROM usage_events WHERE at >= ? AND source = 'hook' AND NOT #{NOT_FAILED}",
           since).as(Int64).to_i
         {events: events, by_source: group("source", since), by_action: group("action", since),
-         documents: documents, silent_hooks: silent}
+         documents: documents, silent_hooks: silent, failed_hooks: failed}
       end
 
       # Documents served in the window, most served first.
@@ -109,7 +121,7 @@ module MnemodocServer
         args = [since.as(DB::Any)] + SEARCHING_ACTIONS.map(&.as(DB::Any)).to_a
         @db.query(
           "SELECT at, source, action, COALESCE(query, '') FROM usage_events " \
-          "WHERE at >= ? AND result_count = 0 AND action IN (#{placeholders}) ORDER BY at DESC",
+          "WHERE at >= ? AND result_count = 0 AND action IN (#{placeholders}) AND #{NOT_FAILED} ORDER BY at DESC",
           args: args
         ) do |result_set|
           result_set.each do

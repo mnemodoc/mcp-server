@@ -6,6 +6,11 @@ module MnemodocServer
     # keys (map absent keys to nil/empty instead).
     abstract class Adapter
       abstract def parse(json : JSON::Any) : HookInput
+
+      # Shapes the prompt hook's stdout for this client: the injected passages
+      # (possibly empty) and an optional notice meant for the user. The
+      # passages are opaque text; only the client knows how to carry a notice.
+      abstract def render(passages : String, notice : String?) : String
     end
   end
 end
