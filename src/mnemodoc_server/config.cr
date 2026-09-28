@@ -114,11 +114,20 @@ module MnemodocServer
     property when_files : Array(String) = [] of String
     property when_task : Array(String) = [] of String
     property when_query : Array(String) = [] of String
+    # Raw regex patterns (validated below, compiled to Regex, and consulted
+    # by Roles::Selector). No implicit case-insensitivity: a pattern that
+    # wants to match regardless of case must say so itself (e.g. `(?i)`).
+    # `when_query_regex` contributes to query_hits exactly like a keyword
+    # match; `unless_query_regex` zeroes the role's entire query contribution
+    # when any pattern in it matches.
+    property when_query_regex : Array(String) = [] of String
+    property unless_query_regex : Array(String) = [] of String
 
     # Programmatic constructor used to build the optional default role, which is
     # declared in YAML as a bare path rather than a full role entry.
     def initialize(@file = "", @description = "", @when_files = [] of String,
-                   @when_task = [] of String, @when_query = [] of String)
+                   @when_task = [] of String, @when_query = [] of String,
+                   @when_query_regex = [] of String, @unless_query_regex = [] of String)
     end
   end
 
@@ -449,6 +458,8 @@ module MnemodocServer
       errors << "context.min_query_score must be >= 1" unless @context.min_query_score >= 1
       @context.roles.each_with_index do |role, index|
         errors << "context.roles[#{index}].file must not be empty" if role.file.strip.empty?
+        validate_role_regexes(errors, role.when_query_regex, index, "when_query_regex")
+        validate_role_regexes(errors, role.unless_query_regex, index, "unless_query_regex")
       end
       errors.concat(@env_errors)
       begin
@@ -457,6 +468,26 @@ module MnemodocServer
         errors << "server.log_level '#{@server.log_level}' is invalid"
       end
       errors
+    end
+
+    # Validates one role's regex-pattern array (when_query_regex or
+    # unless_query_regex): every entry must be non-blank and a syntactically
+    # valid regex. The error names the role index, the field, and the entry
+    # index — never the pattern text itself, since a rejected pattern is
+    # exactly the kind of string an error message should not echo back.
+    private def validate_role_regexes(errors : Array(String), patterns : Array(String), role_index : Int32, field : String) : Nil
+      patterns.each_with_index do |pattern, pattern_index|
+        location = "context.roles[#{role_index}].#{field}[#{pattern_index}]"
+        if pattern.strip.empty?
+          errors << "#{location} must not be blank"
+          next
+        end
+        begin
+          Regex.new(pattern)
+        rescue ArgumentError
+          errors << "#{location} is not a valid regex"
+        end
+      end
     end
   end
 end

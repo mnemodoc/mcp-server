@@ -580,6 +580,28 @@ The tie-break only ever ranks roles that **actually matched a rule**. Similarity
 
 **Keywords match whole words.** `when_task` and `when_query` fire on word boundaries, Unicode-aware, so `test` does not fire inside `tester` or `attestation`, and an accented keyword is bounded like any other. Set `word_boundaries: false` to restore plain substring matching.
 
+**Regular expressions route what keywords cannot.** A keyword cannot tell a CI job URL from a background job. Two optional per-role lists take raw regular expressions:
+
+```yaml
+    - file: doc/claude/roles/ci.md
+      description: CI — pipelines, failing jobs, workflow configuration
+      when_files: [".github/workflows/**"]
+      when_query_regex: &ci_patterns
+        - '(?i)https?://github\.com/[^/\s]+/[^/\s]+/actions/runs/\d+'
+        - '(?i)(?<![\p{L}\p{N}_-])(?:github actions|pipelines?|ci)(?![\p{L}\p{N}_-])'
+    - file: doc/claude/roles/jobs.md
+      when_query: ["job", "jobs", "sidekiq"]
+      unless_query_regex: *ci_patterns
+```
+
+- `when_query_regex` — each pattern that matches the query adds one query point, like a keyword, however many times it matches.
+- `unless_query_regex` — any match sets the role's **whole query contribution** to zero, keyword hits included. File and task points are untouched, and other roles are unaffected: an exclusion is not a veto, and an edited `app/jobs/` file still scores for `jobs`.
+- Patterns are compiled once, at selector construction, and validated at startup: an empty entry or an invalid pattern is a configuration error naming the role, field and index, never the pattern itself.
+- **Patterns are raw.** `word_boundaries` does not apply to them, and there is no implicit case folding: write `(?i)` yourself. An exclusion missing its `(?i)` fails silently — the role fires anyway — and no validation can catch that.
+- Keep URL patterns open-ended: requiring `/`, `?`, `#` or the end of the text after an identifier misses every URL followed by a word, which is how prompts are written. And exclude the hyphen from your word boundaries if your users write French: without it, `ci` fires inside "celui-ci" and "ci-dessous".
+
+These keys need a mnemodoc built after 1.4.0. **Version 1.4.0 ignores them without a word** — it neither rejects the configuration nor applies the patterns — so check the serving binary before relying on them.
+
 **The query channel can require more than one signal.** `min_query_score` is the rule score a prompt must reach before `UserPromptSubmit` injects anything; below it the channel stays **silent** rather than falling back to the default role, since an unsolicited injection on every conversational turn costs context for nothing. The files channel is never gated: an edited file is a strong, unambiguous signal. The `get_project_context` MCP tool is not gated either — the agent asked for it deliberately, which is not the same thing as a hook firing on every turn.
 
 ### Wiring the hook

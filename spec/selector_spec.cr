@@ -2,10 +2,12 @@ require "./spec_helper"
 
 Spectator.describe MnemodocServer::Roles::Selector do
   private def role(name : String, *, when_files = [] of String, when_task = [] of String,
-                   when_query = [] of String, description = "") : MnemodocServer::Roles::Role
+                   when_query = [] of String, description = "",
+                   when_query_regex = [] of String, unless_query_regex = [] of String) : MnemodocServer::Roles::Role
     cfg = MnemodocServer::RoleConfig.new(
       file: "roles/#{name}.md", description: description,
       when_files: when_files, when_task: when_task, when_query: when_query,
+      when_query_regex: when_query_regex, unless_query_regex: unless_query_regex,
     )
     MnemodocServer::Roles::Role.new(cfg, "/nonexistent/#{name}.md")
   end
@@ -311,6 +313,139 @@ Spectator.describe MnemodocServer::Roles::Selector do
         # cache collision it inherited backend's crystal vector and lost.
         selection = selector.select([] of String, "", "question about rails")
         expect(selection.role.config.file).to eq("frontend/lead.md")
+      end
+    end
+  end
+
+  # Configurable regex-based role routing: when_query_regex/unless_query_regex
+  # let a role trigger on (or be suppressed by) a shape a plain keyword list
+  # cannot express — a URL, a log-line pattern.
+  describe "query regex routing" do
+    it "scores a matching when_query_regex pattern as one QUERY_WEIGHT hit" do
+      roles = [role("ci", when_query_regex: ["(?i)gitlab"])]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+      selection = selector.select([] of String, "", "https://gitlab.example.org/group/project")
+      expect(selection.role.name).to eq("ci")
+      expect(selection.score).to eq(MnemodocServer::Roles::Selector::QUERY_WEIGHT)
+    end
+
+    it "contributes exactly one QUERY_WEIGHT even when the pattern matches multiple times" do
+      roles = [role("ci", when_query_regex: ["(?i)gitlab"])]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+      selection = selector.select([] of String, "",
+        "gitlab job on gitlab.example.org mentions gitlab twice more")
+      expect(selection.score).to eq(MnemodocServer::Roles::Selector::QUERY_WEIGHT)
+    end
+
+    # Zeroes the OTHER role's query contribution, cancelling its when_query
+    # keyword hits too — the exact case quoted in the plan.
+    it "excludes CI text from the async query contribution" do
+      roles = [
+        role("ci", when_query_regex: ["(?i)gitlab"]),
+        role("async", when_query: ["jobs"],
+          unless_query_regex: ["(?i)gitlab"]),
+      ]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+
+      result = selector.select([] of String, "",
+        "https://gitlab.example.org/group/project/-/jobs/227703")
+
+      expect(result.role.name).to eq("ci")
+      expect(result.score).to eq(1)
+      expect(result.candidates.find! { |candidate| candidate.name == "async" }.score).to eq(0)
+    end
+
+    # The contract says the whole query contribution is zeroed, not just the
+    # when_query keyword part. A role whose OWN unless_query_regex fires must
+    # also cancel its OWN when_query_regex hits — not merely a sibling role's,
+    # and not merely its own when_query keyword hits (already covered above).
+    it "cancels its own when_query_regex hits (and its own keyword hits) when its own unless_query_regex also matches" do
+      roles = [role("gamma", when_query: ["policy"],
+        when_query_regex: ["(?i)gitlab"], unless_query_regex: ["(?i)gitlab"])]
+      default = role("generalist")
+      selector = MnemodocServer::Roles::Selector.new(roles, default, nil)
+
+      selection = selector.select([] of String, "", "gitlab policy issue")
+
+      expect(selection.role.name).to eq("generalist")
+      expect(selection.candidates.find! { |candidate| candidate.name == "gamma" }.score).to eq(0)
+    end
+
+    it "leaves file_hits and task_hits untouched by an unless_query_regex match" do
+      roles = [role("async", when_files: ["app/jobs/**"], when_task: ["debug"],
+        when_query: ["jobs"], unless_query_regex: ["(?i)gitlab"])]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+
+      result = selector.select(["app/jobs/sync_job.rb"], "debug",
+        "https://gitlab.example.org/group/project/-/jobs/227703")
+
+      # File- and task-derived score must survive the query exclusion: the
+      # query component alone is zeroed, not the whole score.
+      expect(result.role.name).to eq("async")
+      expect(result.score).to eq(
+        MnemodocServer::Roles::Selector::FILE_WEIGHT + MnemodocServer::Roles::Selector::TASK_WEIGHT
+      )
+    end
+
+    it "does not let unless_query_regex on one role affect another role's score" do
+      roles = [
+        role("async", when_query: ["jobs"], unless_query_regex: ["(?i)gitlab"]),
+        role("other", when_query: ["jobs"]),
+      ]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+
+      selection = selector.select([] of String, "", "gitlab jobs status")
+
+      other_score = selection.candidates.find! { |candidate| candidate.name == "other" }.score
+      expect(other_score).to eq(MnemodocServer::Roles::Selector::QUERY_WEIGHT)
+    end
+
+    it "treats a case-sensitive pattern literally" do
+      roles = [role("gamma", when_query_regex: ["gitlab"])]
+      default = role("generalist")
+      selector = MnemodocServer::Roles::Selector.new(roles, default, nil)
+
+      expect(selector.select([] of String, "", "GITLAB pipeline").role.name).to eq("generalist")
+      expect(selector.select([] of String, "", "gitlab pipeline").role.name).to eq("gamma")
+    end
+
+    it "honours an explicit inline case-insensitive flag" do
+      roles = [role("gamma", when_query_regex: ["(?i)gitlab"])]
+      selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+
+      expect(selector.select([] of String, "", "GITLAB pipeline").role.name).to eq("gamma")
+      expect(selector.select([] of String, "", "gitlab pipeline").role.name).to eq("gamma")
+    end
+
+    # Empty when_query_regex/unless_query_regex arrays must be byte-for-byte
+    # indistinguishable from the pre-change behavior: re-run a few existing
+    # examples and confirm nothing about their expected result changes.
+    describe "regression: empty regex arrays change nothing" do
+      it "still scores task and query keywords additively" do
+        roles = [role("crystal", when_task: ["debug"], when_query: ["type"],
+          when_query_regex: [] of String, unless_query_regex: [] of String)]
+        selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+        selection = selector.select([] of String, "debug", "a type issue")
+        expect(selection.candidates.first.score).to eq(3)
+      end
+
+      it "still returns the decisive role on a clear file-glob win" do
+        roles = [
+          role("crystal", when_files: ["**/*.cr"], when_query_regex: [] of String),
+          role("rails", when_files: ["**/*.rb"], unless_query_regex: [] of String),
+        ]
+        selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+        selection = selector.select(["src/foo.cr", "spec/foo_spec.cr"], "debug", "")
+        expect(selection.role.name).to eq("crystal")
+        expect(selection.candidates.first.score).to eq(6)
+      end
+
+      it "still returns the unique weak candidate without calling the embedder" do
+        roles = [role("crystal", when_query: ["type"], when_query_regex: [] of String)]
+        selector = MnemodocServer::Roles::Selector.new(roles, nil, nil)
+        selection = selector.select([] of String, "", "a type issue")
+        expect(selection.role.name).to eq("crystal")
+        expect(selection.reason).to contain("weak")
       end
     end
   end

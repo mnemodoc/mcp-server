@@ -46,10 +46,18 @@ context:
       when_files: ["app/controllers/**", "config/routes.rb"]
       when_query: ["controller", "route", "action", "params", "before_action"]
 
+    - file: doc/roles/ci.md
+      description: CI — pipelines, failing jobs, workflow configuration
+      when_files: [".github/workflows/**"]
+      when_query_regex: &ci_patterns
+        - '(?i)https?://github\.com/[^/\s]+/[^/\s]+/actions/runs/\d+'
+        - '(?i)(?<![\p{L}\p{N}_-])(?:github actions|pipelines?|ci)(?![\p{L}\p{N}_-])'
+
     - file: doc/roles/jobs.md
       description: Background jobs, Active Job, mailers, async work
       when_files: ["app/jobs/**", "app/mailers/**"]
       when_query: ["job", "sidekiq", "async", "mailer", "perform"]
+      unless_query_regex: *ci_patterns
 
     - file: doc/roles/policies.md
       description: Authorization — Pundit policies and scopes
@@ -71,6 +79,20 @@ The role selector scores rule hits (files x3, task x2, query x1). A clear winner
 outright; ambiguous cases are broken by embedding similarity against each role's
 `description`; with no signal it falls back to `default`. So **write a sharp
 `description`** — it's the tie-breaker.
+
+## When a keyword means two things
+
+"Job" is a background job in `app/jobs/` and a CI job in a pipeline. With keywords
+alone, a pasted CI run URL or "the CI job failed" routes to `jobs`. The `ci` role above
+matches those prompts with regular expressions (`when_query_regex`), and the `jobs`
+role reuses the same list through a YAML anchor as an **exclusion**
+(`unless_query_regex`): when one of them matches, `jobs` loses its query points —
+keyword hits included — while its file points stay intact, so editing a file under
+`app/jobs/` still selects it. The anchor keeps the two lists from drifting apart.
+
+Patterns are raw: no implicit case folding (write `(?i)`), and `word_boundaries` does
+not apply to them. These keys need a mnemodoc built after 1.4.0 — 1.4.0 ignores them
+silently.
 
 ## A role file
 

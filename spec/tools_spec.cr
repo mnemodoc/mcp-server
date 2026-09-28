@@ -286,6 +286,33 @@ Spectator.describe "MnemodocServer tools" do
       end
     end
 
+    # Configurable regex-based role routing: the get_project_context MCP tool
+    # must reach the same Selector change as the CLI, so a role with
+    # when_query_regex is selectable through the tool path too.
+    it "returns the role whose when_query_regex matches the query" do
+      File.write(File.join(roles_dir, "ci.md"), "# CI role\nGitLab pipeline conventions.")
+      cfg = MnemodocServer::Config.from_yaml(<<-YAML)
+      db:
+        path: #{tmp_db}
+      paths:
+        - #{tmp_dir}
+      context:
+        roles:
+          - file: #{roles_dir}/ci.md
+            description: "CI expert"
+            when_query_regex: ["(?i)gitlab"]
+      YAML
+      built = MnemodocServer::ToolRegistry.build(cfg, store)
+      begin
+        result = built[:server].dispatch("get_project_context",
+          {"query" => JSON::Any.new("https://gitlab.example.org/group/project/-/jobs/1")})
+        sc = result.structured_content || fail("structured_content was nil")
+        expect(sc["role"].as_s).to eq("ci")
+      ensure
+        built[:embedder].close
+      end
+    end
+
     it "raises MCP::ToolError when the selected role file is missing" do
       cfg = MnemodocServer::Config.from_yaml(<<-YAML)
       db:

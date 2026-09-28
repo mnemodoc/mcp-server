@@ -50,6 +50,11 @@ module MnemodocServer
     # Rules decide when decisive (score above threshold and clear margin over
     # runner-up); the embedder arbitrates ambiguous shortlists.
     class Selector
+      # Per-role precompiled trigger patterns, on the three axes that compile
+      # to Regex plus unless_query_regex. Named once so the tuple type is not
+      # spelled out at every ivar/method signature that carries it.
+      alias Matchers = NamedTuple(task: Array(Regex), query: Array(Regex), query_regex: Array(Regex), unless_query_regex: Array(Regex))
+
       FILE_WEIGHT  = 3
       TASK_WEIGHT  = 2
       QUERY_WEIGHT = 1
@@ -66,7 +71,7 @@ module MnemodocServer
       #
       # word_boundaries decides how when_task/when_query keywords are matched;
       # see the keyword matcher below for why the boundary form is the default.
-      @matchers : Hash(String, {task: Array(Regex), query: Array(Regex)})
+      @matchers : Hash(String, Matchers)
 
       def initialize(@roles : Array(Role), @default : Role?, @embedder : Indexer::Embedder?,
                      @base_dir : String? = nil, @word_boundaries : Bool = true)
@@ -82,12 +87,14 @@ module MnemodocServer
       # Keyed on the resolved file, not the role name, for the same reason the
       # description cache is: names are basenames, so two roles in different
       # directories can share one.
-      private def build_matchers : Hash(String, {task: Array(Regex), query: Array(Regex)})
-        matchers = {} of String => {task: Array(Regex), query: Array(Regex)}
+      private def build_matchers : Hash(String, Matchers)
+        matchers = {} of String => Matchers
         @roles.each do |role|
           matchers[role.resolved_file] = {
-            task:  role.config.when_task.map { |keyword| keyword_pattern(keyword) },
-            query: role.config.when_query.map { |keyword| keyword_pattern(keyword) },
+            task:               role.config.when_task.map { |keyword| keyword_pattern(keyword) },
+            query:              role.config.when_query.map { |keyword| keyword_pattern(keyword) },
+            query_regex:        role.config.when_query_regex.map { |pattern| Regex.new(pattern) },
+            unless_query_regex: role.config.unless_query_regex.map { |pattern| Regex.new(pattern) },
           }
         end
         matchers
@@ -223,16 +230,27 @@ module MnemodocServer
         patterns_for(role)[:task].count(&.matches?(task))
       end
 
+      # The query contribution combines when_query keyword hits and
+      # when_query_regex hits — unless unless_query_regex matches, in which
+      # case the whole contribution (both signals) is zeroed for this role
+      # only. Checked first, and short-circuits: a role that matches its own
+      # exclusion pattern never has its keyword/regex hits counted at all.
+      #
+      # Each when_query_regex pattern counts once regardless of how many
+      # times it matches within the query (Array#count(&.matches?(query))
+      # already gives "once per pattern", not "once per occurrence").
       private def query_hits(role : Role, query : String) : Int32
         return 0 if query.empty?
-        patterns_for(role)[:query].count(&.matches?(query))
+        patterns = patterns_for(role)
+        return 0 if patterns[:unless_query_regex].any?(&.matches?(query))
+        patterns[:query].count(&.matches?(query)) + patterns[:query_regex].count(&.matches?(query))
       end
 
       # The default role is not among @roles, so it has no precompiled entry.
       # It carries no triggers either — it is a fallback, not a candidate — so
       # an empty set is the right answer rather than a missing-key error.
-      private def patterns_for(role : Role) : {task: Array(Regex), query: Array(Regex)}
-        @matchers[role.resolved_file]? || {task: [] of Regex, query: [] of Regex}
+      private def patterns_for(role : Role) : Matchers
+        @matchers[role.resolved_file]? || {task: [] of Regex, query: [] of Regex, query_regex: [] of Regex, unless_query_regex: [] of Regex}
       end
 
       private def context_bundle(files : Array(String), task : String, query : String) : String
@@ -282,7 +300,18 @@ module MnemodocServer
         th = task_hits(role, task)
         parts << "task: #{th} kw (→#{th * TASK_WEIGHT})" if th > 0
         qh = query_hits(role, query)
-        parts << "query: #{qh} kw (→#{qh * QUERY_WEIGHT})" if qh > 0
+        if qh > 0
+          patterns = patterns_for(role)
+          keyword_count = patterns[:query].count(&.matches?(query))
+          regex_count = patterns[:query_regex].count(&.matches?(query))
+          parts << if keyword_count > 0 && regex_count > 0
+            "query: #{keyword_count} kw + #{regex_count} re (→#{qh * QUERY_WEIGHT})"
+          elsif regex_count > 0
+            "query: #{regex_count} re (→#{qh * QUERY_WEIGHT})"
+          else
+            "query: #{keyword_count} kw (→#{qh * QUERY_WEIGHT})"
+          end
+        end
         "#{parts.join("; ")} → score #{score}, net"
       end
     end

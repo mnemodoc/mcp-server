@@ -443,6 +443,18 @@ config, the selector lives as long as the daemon) and spell their boundaries as
 without UCP: keywords and prompts alike are routinely accented. `word_boundaries:
 false` restores the old behaviour deliberately.
 
+**Regular expressions route what keywords cannot.** `when_query_regex` adds one
+query point per matching pattern, like a keyword, once however many times it
+matches. `unless_query_regex` sets the role's whole query contribution — keyword
+hits included — to zero when any pattern matches; file and task points are
+untouched and other roles are unaffected, so an exclusion is not a veto. The
+motivating case: a pasted CI job URL contains `jobs` and used to select a
+background-jobs role. Patterns are raw — `word_boundaries` does not apply and
+there is no implicit case folding — compiled once in `build_matchers`, and
+validated at startup (empty or invalid entries are errors naming role, field and
+index, never the pattern). No forge name or URL shape is hard-coded here: they
+belong to the project's YAML. A 1.4.0 binary ignores both keys silently.
+
 `context.min_query_score` is the score the query channel requires before
 injecting; below it stdout stays **empty**, rather than falling back to the
 default role, because this runs before every user message. The files channel is
@@ -585,6 +597,8 @@ context:              # optional — contextual-role selection (get_project_cont
       when_files: ["app/models/**", "app/policies/**"]  # glob triggers (File.match? on the path)
       when_task:  ["implement", "refactor"]             # keyword triggers on the task kind
       when_query: ["operation", "policy"]               # keyword triggers on the user query
+      when_query_regex: []    # raw regexes; each match adds one query point (write (?i) yourself)
+      unless_query_regex: []  # raw regexes; any match zeroes this role's query points (files/task kept)
 
 hook:                 # optional — the UserPromptSubmit passage injector (`prompt-hook`)
   similarity_threshold: 0.515  # cosine the best passage must reach to be injected at all

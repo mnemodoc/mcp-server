@@ -234,6 +234,27 @@ Spectator.describe "context CLI command" do
     end
   end
 
+  # Configurable regex-based role routing: a role with when_query_regex should
+  # be selectable through the `context` CLI subcommand end to end, the same
+  # way a plain when_query keyword already is.
+  it "selects a role whose when_query_regex matches the query" do
+    skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+    File.write(File.join(tmp_dir, "ci.md"), "# CI role\nGitLab pipeline conventions.")
+    File.write(config_path, <<-YAML)
+    paths:
+      - .
+    server:
+      log_file: #{log_path}
+    context:
+      roles:
+        - file: ci.md
+          when_query_regex: ["(?i)gitlab"]
+    YAML
+    result = run_context(["--config", config_path, "--query", "https://gitlab.example.org/group/project/-/jobs/1"])
+    expect(result[:code]).to eq(0)
+    expect(result[:out]).to contain("CI role")
+  end
+
   it "always prints the default role on a cross-cutting PreToolUse edit" do
     skip "build the binary first (mise dev:build)" unless File.exists?(binary)
     write_fixture_with_default
@@ -416,6 +437,65 @@ Spectator.describe "context CLI command" do
       # The turn is still traceable: the event and the prompt's length are there.
       expect(log).to contain("event=UserPromptSubmit")
       expect(log).to contain("query_len=")
+    end
+  end
+  # The regex rules reach the query channel through the same gate as keywords:
+  # a single regex hit is one point, and min_query_score counts it as such on
+  # the real hook path (--hook-stdin, UserPromptSubmit), not only through flags.
+  describe "regex rules under min_query_score" do
+    private def write_regex_fixture
+      File.write(File.join(tmp_dir, "generalist.md"), "# Generalist role\nDefault conventions.")
+      File.write(File.join(tmp_dir, "ci.md"), "# CI role\nPipelines.")
+      File.write(File.join(tmp_dir, "async.md"), "# Async role\nBackground jobs.")
+      File.write(config_path, <<-YAML)
+      paths:
+        - .
+      server:
+        log_file: #{log_path}
+      context:
+        default: generalist.md
+        min_query_score: 2
+        roles:
+          - file: ci.md
+            when_query_regex: ["(?i)gitlab", "(?i)pipeline"]
+          - file: async.md
+            when_query: ["jobs", "sidekiq"]
+            unless_query_regex: ["(?i)gitlab"]
+      YAML
+    end
+
+    private def prompt_payload(prompt : String) : String
+      {session_id: "x", hook_event_name: "UserPromptSubmit", prompt: prompt}.to_json
+    end
+
+    it "stays silent when a single regex hit falls short of the threshold" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_regex_fixture
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], prompt_payload("the gitlab run failed"))
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to be_empty
+    end
+
+    it "injects once two patterns match" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_regex_fixture
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], prompt_payload("the gitlab pipeline failed"))
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).to contain("CI role")
+    end
+
+    # Without the exclusion, "sidekiq jobs" would give async two keyword points
+    # and clear the threshold on a prompt that is about CI.
+    it "keeps an excluded role below the threshold on the hook path" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_regex_fixture
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"],
+        prompt_payload("gitlab says the sidekiq jobs broke"))
+
+      expect(result[:code]).to eq(0)
+      expect(result[:out]).not_to contain("Async role")
     end
   end
 end

@@ -432,6 +432,135 @@ Spectator.describe MnemodocServer::Config do
     end
   end
 
+  # Configurable regex-based role routing: a role can carry raw regex patterns
+  # alongside its plain-keyword when_query, so a project can route on a URL or
+  # log-line shape a keyword list cannot express.
+  describe "role query regex config" do
+    it "defaults when_query_regex and unless_query_regex to empty arrays when absent" do
+      yaml = <<-YAML
+      context:
+        roles:
+          - file: crystal.md
+            when_query: ["crystal"]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      role = config.context.roles.first
+      expect(role.when_query_regex).to eq([] of String)
+      expect(role.unless_query_regex).to eq([] of String)
+    end
+
+    it "parses when_query_regex and unless_query_regex from YAML" do
+      yaml = <<-YAML
+      context:
+        roles:
+          - file: ci.md
+            when_query_regex: ["(?i)gitlab", "jenkins"]
+            unless_query_regex: ["(?i)local"]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      role = config.context.roles.first
+      expect(role.when_query_regex).to eq(["(?i)gitlab", "jenkins"])
+      expect(role.unless_query_regex).to eq(["(?i)local"])
+    end
+
+    it "rejects an empty entry in when_query_regex, naming role/field/index but not the pattern" do
+      yaml = <<-YAML
+      paths:
+        - doc/
+      context:
+        roles:
+          - file: ci.md
+            when_query_regex: ["(?i)gitlab", ""]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      expect { config.validate! }
+        .to raise_error(ArgumentError, /context\.roles\[0\]\.when_query_regex\[1\]/)
+    end
+
+    it "rejects a whitespace-only entry in unless_query_regex" do
+      yaml = <<-YAML
+      paths:
+        - doc/
+      context:
+        roles:
+          - file: ci.md
+            unless_query_regex: ["   "]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      expect { config.validate! }
+        .to raise_error(ArgumentError, /context\.roles\[0\]\.unless_query_regex\[0\]/)
+    end
+
+    it "names the role/field/index for a blank when_query_regex entry" do
+      yaml = <<-YAML
+      paths:
+        - doc/
+      context:
+        roles:
+          - file: ci.md
+            when_query_regex: ["   "]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      begin
+        config.validate!
+        fail "expected validate! to raise"
+      rescue ex : ArgumentError
+        expect(ex.message || "").to eq("context.roles[0].when_query_regex[0] must not be blank")
+      end
+    end
+
+    it "rejects a syntactically invalid regex, naming role/field/index but not the pattern" do
+      yaml = <<-YAML
+      paths:
+        - doc/
+      context:
+        roles:
+          - file: ci.md
+            when_query_regex: ["(unclosed"]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      begin
+        config.validate!
+        fail "expected validate! to raise"
+      rescue ex : ArgumentError
+        expect(ex.message || "").to match(/context\.roles\[0\]\.when_query_regex\[0\]/)
+        expect(ex.message || "").not_to contain("(unclosed")
+      end
+    end
+
+    it "rejects a syntactically invalid unless_query_regex the same way" do
+      yaml = <<-YAML
+      paths:
+        - doc/
+      context:
+        roles:
+          - file: ci.md
+            unless_query_regex: ["a(b"]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      expect { config.validate! }
+        .to raise_error(ArgumentError, /context\.roles\[0\]\.unless_query_regex\[0\]/)
+    end
+
+    # Old-style YAML (no regex keys at all) must validate exactly as before:
+    # no new errors, no behavior change.
+    it "validates a config with both regex fields absent exactly as before" do
+      yaml = <<-YAML
+      paths:
+        - doc/
+      context:
+        roles:
+          - file: crystal.md
+            description: "Crystal expert"
+            when_files: ["**/*.cr"]
+            when_task: ["debug"]
+            when_query: ["crystal"]
+      YAML
+      config = MnemodocServer::Config.from_yaml(yaml)
+      expect { config.validate! }.not_to raise_error
+    end
+  end
+
   describe "#validate!" do
     # A default config no longer validates: `paths` has no default, so a
     # project that configured nothing is a stated error rather than a silent
