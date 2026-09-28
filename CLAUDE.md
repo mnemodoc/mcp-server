@@ -82,7 +82,7 @@ src/mnemodoc_server/
   progress.cr                      Terminal progress rendering (IO + tty injected) + Progress::Indexing, the crawler's two phases
   systemd.cr                       systemd sd_notify (READY=1, STOPPING=1, watchdog)
   single_flight.cr                 Concurrent deduplication via Channel + Mutex
-  connection_pool.cr               Per-host HTTP connection pool (for Ollama calls)
+  connection_pool.cr               Per-host HTTP connection pool (for Ollama calls); VerifiedClient dials each resolved address and keeps the one getpeername confirms — on darwin, Crystal 1.20.3 reports a refused connect as done, so `localhost` stuck to a dead ::1 and never reached an IPv4-only Ollama
   chunk.cr                         Chunk struct + FileInfo struct
   indexer/document.cr              Document struct (text + verbatim flag + outline + chunks) and OutlineEntry
   advisories.cr                    Persistent startup advisories, surfaced in every tool response

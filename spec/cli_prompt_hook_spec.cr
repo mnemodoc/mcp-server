@@ -135,8 +135,11 @@ Spectator.describe "prompt-hook CLI" do
   end
 
   # True when a real Ollama answers. Only the end-to-end example needs one.
+  # Dialled like the server dials it: a plain HTTP::Client settles on the dead
+  # ::1 address of `localhost` on macOS, and this example was skipped with
+  # Ollama running.
   private def real_ollama? : Bool
-    client = HTTP::Client.new(URI.parse(REAL_OLLAMA))
+    client = MnemodocServer::VerifiedClient.new(URI.parse(REAL_OLLAMA))
     client.connect_timeout = 1.second
     client.read_timeout = 2.seconds
     begin

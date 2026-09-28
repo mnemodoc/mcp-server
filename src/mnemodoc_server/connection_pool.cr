@@ -1,4 +1,67 @@
 module MnemodocServer
+  # An HTTP::Client that only settles on an address it is really connected to.
+  #
+  # `localhost` resolves to ::1 before 127.0.0.1 on macOS, and Ollama listens on
+  # 127.0.0.1 only. Under Crystal 1.20.3's polling event loop a refused
+  # non-blocking connect is reported as a success on darwin: connect(2) is
+  # retried once the socket turns writable and SO_ERROR is never read
+  # (crystal/event_loop/polling.cr, #connect). TCPSocket.new therefore kept the
+  # dead ::1 socket, never tried 127.0.0.1, and the first write failed with
+  # "Broken pipe" — the default ollama.host could not reach a default Ollama.
+  #
+  # Only the dial is replaced: each resolved address is tried in turn, and a
+  # socket is kept once getpeername confirms it is connected. Everything else
+  # is HTTP::Client's own — lazy connection, reconnection, TLS against the host
+  # name, the Host header — copied from its private #io, which this overrides.
+  class VerifiedClient < HTTP::Client
+    private def io
+      io = @io
+      return io if io
+      unless @reconnect
+        raise "This HTTP::Client cannot be reconnected"
+      end
+
+      hostname = @host.starts_with?('[') && @host.ends_with?(']') ? @host[1..-2] : @host
+      io = VerifiedClient.dial(hostname, @port, @dns_timeout, @connect_timeout)
+      io.read_timeout = @read_timeout if @read_timeout
+      io.write_timeout = @write_timeout if @write_timeout
+      io.sync = false
+
+      {% if !flag?(:without_openssl) %}
+        if tls = @tls
+          tcp_socket = io
+          begin
+            io = OpenSSL::SSL::Socket::Client.new(tcp_socket, context: tls, sync_close: true, hostname: @host.rchop('.'))
+          rescue exc
+            tcp_socket.close
+            raise exc
+          end
+        end
+      {% end %}
+
+      @io = io
+    end
+
+    # Connects to the first address of *host* that is really connected, or
+    # raises the last connection error.
+    def self.dial(host : String, port : Int32, dns_timeout : Time::Span?, connect_timeout : Time::Span?) : TCPSocket
+      last_error : Exception? = nil
+      Socket::Addrinfo.tcp(host, port, timeout: dns_timeout).each do |addrinfo|
+        socket = nil
+        begin
+          socket = TCPSocket.new(addrinfo.ip_address.address, port, connect_timeout: connect_timeout)
+          # Raises on a socket whose connect was refused but reported as done.
+          socket.remote_address
+          return socket
+        rescue ex : Socket::Error | IO::Error
+          socket.try(&.close) rescue nil
+          last_error = ex
+        end
+      end
+      raise last_error || Socket::ConnectError.new("no address to connect to for #{host}:#{port}")
+    end
+  end
+
   # A small per-host pool of reusable HTTP clients, used to avoid reopening a
   # connection for every Ollama embedding request. Idle clients are retained
   # up to IDLE_PER_HOST per host; extras are closed. The cap is sized to cover
@@ -31,7 +94,7 @@ module MnemodocServer
       key = host_key(uri)
       client = @mutex.synchronize { @idle[key]?.try(&.pop?) }
       unless client
-        client = HTTP::Client.new(uri)
+        client = VerifiedClient.new(uri)
         client.connect_timeout = @timeout.seconds
         client.read_timeout = @timeout.seconds
         # Writing needs a bound too. A server that accepts and then stops

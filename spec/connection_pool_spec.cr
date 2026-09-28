@@ -84,3 +84,56 @@ Spectator.describe MnemodocServer::ConnectionPool do
     end
   end
 end
+
+# `localhost` resolves to ::1 before 127.0.0.1 on macOS, and Ollama listens on
+# 127.0.0.1 only. Under Crystal 1.20.3's polling event loop a refused
+# non-blocking connect is reported as a success on darwin — connect(2) is
+# retried after the socket turns writable and SO_ERROR is never read — so
+# TCPSocket.new settled on the dead ::1 socket, never tried 127.0.0.1, and the
+# first write failed with "Broken pipe". The default ollama.host could not
+# reach a default Ollama. On Linux the stdlib reports the refusal and these
+# examples pass either way.
+Spectator.describe "ConnectionPool reaching a host by name" do
+  private def ipv4_only_server(&)
+    server = HTTP::Server.new do |context|
+      context.response.print(context.request.headers["Host"]? || "")
+    end
+    address = server.bind_tcp("127.0.0.1", 0)
+    spawn { server.listen }
+    Fiber.yield
+    begin
+      yield address.port
+    ensure
+      server.close
+    end
+  end
+
+  it "reaches a server that listens on 127.0.0.1 only, through localhost" do
+    ipv4_only_server do |port|
+      pool = MnemodocServer::ConnectionPool.new(timeout: 2)
+      uri = URI.parse("http://localhost:#{port}")
+      client = pool.checkout(uri)
+      begin
+        response = client.get("/")
+        expect(response.status_code).to eq(200)
+        # The request still names the host it was addressed to.
+        expect(response.body).to eq("localhost:#{port}")
+      ensure
+        pool.discard(client)
+      end
+    end
+  end
+
+  it "still fails when no address of the host answers" do
+    pool = MnemodocServer::ConnectionPool.new(timeout: 2)
+    closed = TCPServer.new("127.0.0.1", 0)
+    port = closed.local_address.port
+    closed.close
+    client = pool.checkout(URI.parse("http://localhost:#{port}"))
+    begin
+      expect { client.get("/") }.to raise_error(Socket::Error)
+    ensure
+      pool.discard(client)
+    end
+  end
+end
