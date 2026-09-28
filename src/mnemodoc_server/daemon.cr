@@ -18,8 +18,15 @@ module MnemodocServer
     # socket transport, wires SystemD + signal callbacks, and blocks until
     # the transport stops (idle timeout or SIGTERM).
     # Does NOT close the log file — the CLI entry point owns that lifecycle.
+    #
+    # A daemon is spawned detached, with no stdio: an exception escaping here
+    # used to die with it, leaving the proxy to report only that the daemon
+    # never became healthy. The reason goes to the log first.
     def run : Nil
       run_internal(ready_channel: nil)
+    rescue ex
+      Log.fatal { "daemon failed to start: #{ex.message} (#{ex.class.name})" }
+      raise ex
     end
 
     # Test seam: identical to #run but sends nil on *ready_channel* once the

@@ -368,9 +368,10 @@ module MnemodocServer
     end
 
     # Path to the Unix domain socket used by the per-project daemon. Lives beside
-    # the index DB so it is scoped to the same project directory.
+    # the index DB so it is scoped to the same project directory — unless that
+    # path is too long to bind, see #socket_path.
     def daemon_socket_path : String
-      File.join(File.dirname(db_path), "daemon.sock")
+      socket_path("daemon.sock")
     end
 
     # Path to the lock file that guards singleton daemon startup. Lives beside
@@ -388,7 +389,47 @@ module MnemodocServer
     # Socket the daemon listens on for usage events. Beside the index DB, like
     # the daemon's own socket, so it is scoped to the same project.
     def usage_socket_path : String
-      File.join(File.dirname(db_path), "usage.sock")
+      socket_path("usage.sock")
+    end
+
+    # A UNIX socket path is bounded by the OS — 103 usable bytes on macOS, 107
+    # on Linux — and an index nested deep enough put the daemon's socket past
+    # it: the daemon died at bind, detached and without a word, and every
+    # client waited 30 s before falling back to a standalone server.
+    #
+    # Past the bound, the socket moves to a short directory private to the
+    # user, under $XDG_RUNTIME_DIR where it exists and /tmp otherwise, named
+    # after a digest of the path it replaces. The name is therefore the same
+    # for the proxy, the daemon and the CLI, and distinct per project and per
+    # socket. The lock, pid and spool files stay beside the index: only a
+    # socket address is bounded.
+    #
+    # The directory must be ours and closed to everyone else: another user who
+    # could write there could put a socket of theirs where the proxy connects.
+    # When it is not, the natural path is kept and the bind fails loudly.
+    private def socket_path(name : String) : String
+      natural = File.join(File.dirname(db_path), name)
+      return natural if natural.bytesize <= Socket::UNIXAddress::MAX_PATH_SIZE
+
+      dir = private_socket_dir
+      return natural unless dir
+      File.join(dir, "#{Digest::SHA1.hexdigest(natural)[0, 16]}.sock")
+    end
+
+    private def private_socket_dir : String?
+      base = ENV["XDG_RUNTIME_DIR"]?.presence || "/tmp"
+      uid = LibC.getuid
+      dir = File.join(base, "mnemodoc-#{uid}")
+      begin
+        Dir.mkdir(dir, 0o700)
+      rescue File::AlreadyExistsError
+      end
+      info = File.info(dir, follow_symlinks: false)
+      return nil unless info.directory? && info.owner_id == uid.to_s
+      return nil unless info.permissions.value & 0o077 == 0
+      dir
+    rescue File::Error
+      nil
     end
 
     # Spool file holding events written while no daemon answered. Beside the

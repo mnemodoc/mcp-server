@@ -304,6 +304,74 @@ Spectator.describe MnemodocServer::Config do
     end
   end
 
+  # A UNIX socket path is bounded by the OS (103 usable bytes on macOS, 107 on
+  # Linux). Beside an index nested deep enough, the daemon could not bind at all:
+  # it died detached, and the proxy waited 30 s before falling back. Past the
+  # bound, the socket moves to a short private directory instead.
+  describe "socket paths past the OS limit" do
+    let(runtime) { "/tmp/mnemodoc-rt-#{Random::Secure.hex(4)}" }
+    let(long_db) { "/tmp/#{"deep-" * 24}#{Random::Secure.hex(4)}/index.db" }
+
+    before_each do
+      Dir.mkdir_p(runtime)
+      File.chmod(runtime, 0o700)
+    end
+    after_each { FileUtils.rm_rf(runtime) }
+
+    private def with_runtime_dir(&)
+      previous = ENV["XDG_RUNTIME_DIR"]?
+      ENV["XDG_RUNTIME_DIR"] = runtime
+      yield
+    ensure
+      previous ? (ENV["XDG_RUNTIME_DIR"] = previous) : ENV.delete("XDG_RUNTIME_DIR")
+    end
+
+    private def config_for(db : String) : MnemodocServer::Config
+      MnemodocServer::Config.from_yaml("db:\n  path: #{db}")
+    end
+
+    it "keeps a socket that fits beside the index" do
+      with_runtime_dir do
+        expect(config_for("/tmp/x/index.db").daemon_socket_path).to eq("/tmp/x/daemon.sock")
+      end
+    end
+
+    it "moves a socket that does not fit into a private per-user directory" do
+      with_runtime_dir do
+        config = config_for(long_db)
+        path = config.daemon_socket_path
+        private_dir = File.join(runtime, "mnemodoc-#{LibC.getuid}")
+        expect(File.join(File.dirname(long_db), "daemon.sock").bytesize).to be > Socket::UNIXAddress::MAX_PATH_SIZE
+        expect(path).to start_with(private_dir + "/")
+        expect(path).to end_with(".sock")
+        expect(path.bytesize).to be <= Socket::UNIXAddress::MAX_PATH_SIZE
+        expect(File.info(private_dir).permissions.value & 0o777).to eq(0o700)
+        expect(config.daemon_socket_path).to eq(path)
+        expect(config.usage_socket_path).not_to eq(path)
+        expect(config_for(long_db.sub("index.db", "other/index.db")).daemon_socket_path).not_to eq(path)
+      end
+    end
+
+    it "gives a socket a relocated path it can actually bind" do
+      with_runtime_dir do
+        server = UNIXServer.new(config_for(long_db).daemon_socket_path)
+        server.close
+      end
+    end
+
+    # Another user able to create or write that directory could put a socket
+    # of theirs where our proxy connects. Keeping the natural path fails loudly
+    # at bind instead.
+    it "refuses a directory other users can write" do
+      with_runtime_dir do
+        shared = File.join(runtime, "mnemodoc-#{LibC.getuid}")
+        Dir.mkdir_p(shared)
+        File.chmod(shared, 0o777)
+        expect(config_for(long_db).daemon_socket_path).to eq(File.join(File.dirname(long_db), "daemon.sock"))
+      end
+    end
+  end
+
   describe "#daemon_socket_path and #daemon_lock_path" do
     it "places daemon.sock beside the index DB" do
       config = MnemodocServer::Config.from_yaml("db:\n  path: /tmp/x/index.db")

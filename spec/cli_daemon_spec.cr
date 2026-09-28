@@ -93,6 +93,51 @@ Spectator.describe "daemon CLI" do
     end
   end
 
+  # Past the OS bound on a UNIX socket path, the daemon used to die at bind,
+  # detached and without a word, and every client fell back to a standalone
+  # server after waiting 30 s.
+  describe "a project nested too deep for its socket path" do
+    let(tmp_dir) { "/tmp/mnemodoc-cli-daemon-#{Random::Secure.hex(4)}-#{"nested-" * 12}project" }
+
+    it "still gets a running daemon" do
+      write_config
+      with_daemon do |config|
+        expect(File.join(tmp_dir, ".mnemodoc", "daemon.sock").bytesize).to be > Socket::UNIXAddress::MAX_PATH_SIZE
+        expect(config.daemon_socket_path.bytesize).to be <= Socket::UNIXAddress::MAX_PATH_SIZE
+        stdout, _, status = run_cli("daemon", "status", "--config", config_path)
+        expect(status.success?).to be_true
+        expect(stdout).to contain("Status: running")
+      end
+    end
+
+    it "writes why to the log when it cannot bind" do
+      runtime = "/tmp/mnemodoc-rt-#{Random::Secure.hex(4)}"
+      shared = File.join(runtime, "mnemodoc-#{LibC.getuid}")
+      Dir.mkdir_p(shared)
+      File.chmod(shared, 0o777)
+      log = File.join(tmp_dir, "daemon.log")
+      File.write(config_path, <<-YAML)
+      paths:
+        - doc/
+      ollama:
+        host: http://127.0.0.1:1
+      server:
+        log_file: #{log}
+        log_level: error
+        daemon_watch: false
+      YAML
+      begin
+        Process.run("./bin/mnemodoc-server", ["serve", "--daemon", "--config", config_path],
+          env: {"XDG_RUNTIME_DIR" => runtime},
+          input: Process::Redirect::Close, output: Process::Redirect::Close, error: Process::Redirect::Close)
+        expect(File.read(log)).to contain("daemon failed to start")
+        expect(File.read(log)).to contain("Path size exceeds")
+      ensure
+        FileUtils.rm_rf(runtime)
+      end
+    end
+  end
+
   describe "daemon stop" do
     it "stops a running daemon and removes its socket" do
       write_config

@@ -166,8 +166,17 @@ module MnemodocServer
 
   # Closes the log file on shutdown, but only when logging to a real file —
   # stderr/stdout streams are left untouched. Safe to call unconditionally.
+  #
+  # The backend is closed first, as reopen_log_file! does: it owns an async
+  # dispatcher, and closing it drains what is still queued. Closing the file
+  # under it instead lost the last entries — the ones that say why a process is
+  # exiting — and killed the dispatcher on a write to a closed stream, after
+  # which the exit-time flush waited on it forever: a daemon that failed to
+  # bind never exited.
   def self.close_log_file! : Nil
-    @@log_file.try(&.close) if log_to_real_file?
+    return unless log_to_real_file?
+    @@logger.try(&.close)
+    @@log_file.try(&.close)
   end
 
   # Holds back info-level logging while a progress bar owns stderr.
