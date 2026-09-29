@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.0] - 2026-09-29
 
 ### Added
 - **The live watch uses the operating system's file events.** FSEvents on
@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A configured directory that is deleted and recreated, or created after the
   daemon started, is watched again** — a `git checkout` of a branch without
   it, then back — as the poller did by itself on its next pass.
+- **Roles can be routed on regular expressions.** Two optional per-role
+  lists, `when_query_regex` and `unless_query_regex`, take raw patterns: the
+  first adds one query point per matching pattern, like a keyword; the second
+  zeroes the role's whole query contribution when any pattern matches, file
+  and task points kept, so an exclusion is not a veto. The motivating case: a
+  pasted CI job URL contains `jobs` and used to select a background-jobs role.
+  Patterns are compiled once and validated at startup; an empty or invalid
+  entry is an error naming role, field and index. 1.4.0 ignores both keys.
+- **The prompt hook tells the user when it could not look.** An Ollama outage
+  used to look exactly like "the documentation has nothing to say". A failure
+  still exits 0 and injects nothing, but Claude Code now shows a notice, once
+  per session and per failure, and once more on recovery; no notice quotes the
+  prompt. Outside a mnemodoc project the hook no longer embeds anything. The
+  usage journal records each call's outcome, and `usage` reports failed hooks
+  apart from silences and misses.
 
 ### Changed
 - **Polling costs a third less.** Excluded directories are no longer listed,
@@ -39,6 +54,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   during shutdown at the cost of one embedding call each.
 
 ### Fixed
+- **A daemon in a deeply nested project starts.** Past the OS bound on a UNIX
+  socket path (103 bytes on macOS, 107 on Linux) the daemon died at bind,
+  silently, and every client waited 30 s before falling back to a standalone
+  server. Both sockets now move to a private per-user directory under
+  `$XDG_RUNTIME_DIR` or `/tmp`; a directory others can write is refused.
+- **Ollama listening on IPv4 only is reached through `localhost` on macOS.**
+  With the default `ollama.host`, every embedding failed with "Broken pipe":
+  `localhost` resolved to `::1` first, and a refused connection there was
+  reported as a success. Each resolved address is now tried until one really
+  answers.
 - **One daemon per project.** A daemon now holds `daemon.instance.lock` for
   its whole life; a second one exits at once without opening the index, and a
   proxy that finds the lock held waits for that daemon — even one too busy to
@@ -328,6 +353,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-host HTTP connection pool for Ollama calls
 - Static Linux binaries built via `docker buildx bake` (distroless runtime image)
 
+[1.5.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.5.0
+[1.4.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.4.0
 [1.3.1]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.3.1
 [1.3.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.3.0
 [1.2.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.2.0
