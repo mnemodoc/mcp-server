@@ -18,7 +18,7 @@ permissions: {}
 jobs:
   update-tap:
     name: Bump formula in mnemodoc/homebrew-tap
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       # This repository is checked out for one reason: `scripts/update_formula.py`
@@ -28,7 +28,7 @@ jobs:
       # here. Checked out FIRST: actions/checkout cleans its destination, so
       # doing it after would wipe the tap checkout nested below it.
       - name: Checkout this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -71,7 +71,7 @@ jobs:
           done
 
       - name: Checkout tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: mnemodoc/homebrew-tap
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
@@ -97,7 +97,7 @@ jobs:
             --linux-amd64  "$SHA_LINUX_AMD64"
 
       - name: Open PR on tap
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: homebrew-tap
