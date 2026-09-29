@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] - 2026-09-29
+
+### Fixed
+- **Deleting a document removes it from the index again on macOS** when its
+  configured path ends with a slash (`doc/`, the usual spelling). The watch
+  reported such a file as `doc//guide.md`, a path the index never holds: a
+  change was still re-indexed, but a deletion was never applied, and the
+  document kept being served until the next daemon start.
+
 ## [1.5.0] - 2026-09-29
 
 ### Added
@@ -353,6 +362,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-host HTTP connection pool for Ollama calls
 - Static Linux binaries built via `docker buildx bake` (distroless runtime image)
 
+[1.5.1]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.5.1
 [1.5.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.5.0
 [1.4.0]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.4.0
 [1.3.1]: https://github.com/mnemodoc/mcp-server/releases/tag/v1.3.1
