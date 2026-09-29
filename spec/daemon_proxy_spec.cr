@@ -192,6 +192,110 @@ Spectator.describe MnemodocServer::DaemonProxy do
     end
   end
 
+  # The instance lock is what a running daemon holds; the proxy must read a
+  # held lock as "alive" whatever /health says. Both examples run the proxy as
+  # the real binary, since it spawns daemons through Process.executable_path.
+  describe "instance lock (subprocess)" do
+    let(proxy_log) { File.join(tmp_dir, "proxy.log") }
+
+    private def write_logging_config : Nil
+      File.write(config_path, <<-YAML)
+      paths:
+        - #{tmp_dir}
+      db:
+        path: #{File.join(tmp_dir, "index.db")}
+      server:
+        log_level: info
+        log_file: #{proxy_log}
+        daemon_idle_timeout: 2
+      YAML
+    end
+
+    private def hold_instance_lock(cfg : MnemodocServer::Config) : File
+      Dir.mkdir_p(File.dirname(cfg.daemon_instance_lock_path))
+      file = File.open(cfg.daemon_instance_lock_path, "w")
+      file.flock_exclusive(blocking: false)
+      file
+    end
+
+    private def start_proxy : Process
+      Process.new(binary, ["serve", "--stdio", "--config", config_path],
+        input: Process::Redirect::Pipe, output: Process::Redirect::Pipe,
+        error: Process::Redirect::Close)
+    end
+
+    private def reap(proxy : Process) : Nil
+      proxy.terminate(graceful: false) rescue nil
+      proxy.wait rescue nil
+      Process.run("pkill", ["-f", config_path])
+    end
+
+    it "neither deletes the socket nor spawns while a busy daemon holds the lock" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_logging_config
+      cfg = MnemodocServer::Config.from_yaml(File.read(config_path))
+      lock = hold_instance_lock(cfg)
+
+      # Accepts and never answers: a daemon busy in a blocking SQLite write.
+      server = UNIXServer.new(cfg.daemon_socket_path)
+      held = [] of UNIXSocket
+      spawn do
+        while socket = server.accept?
+          held << socket
+        end
+      end
+      socket_before = File.info(cfg.daemon_socket_path)
+
+      proxy = start_proxy
+      begin
+        proxy.input.puts %({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}})
+        proxy.input.flush
+        # Two health probes of 5 s each is when the old proxy gave up on it.
+        sleep 12.seconds
+
+        expect(File.info?(cfg.daemon_socket_path).try(&.same_file?(socket_before))).to be_true
+        expect(File.read(proxy_log)).not_to contain("spawning daemon")
+      ensure
+        reap(proxy)
+        held.each(&.close)
+        server.close
+        lock.close
+      end
+    end
+
+    it "spawns a daemon once the lock holder exits without becoming healthy" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_logging_config
+      cfg = MnemodocServer::Config.from_yaml(File.read(config_path))
+      lock = hold_instance_lock(cfg)
+
+      proxy = start_proxy
+      begin
+        proxy.input.puts %({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"status","arguments":{}}})
+        proxy.input.flush
+        sleep 2.seconds
+        # The holder dies before it ever served.
+        lock.close
+
+        reply = Channel(String?).new(1)
+        spawn { reply.send(proxy.output.gets) }
+        line = select
+        when value = reply.receive
+          value
+        when timeout(20.seconds)
+          nil
+        end
+
+        expect(line).not_to be_nil
+        expect(JSON.parse(line.to_s).dig("result", "structuredContent", "status").as_s).to eq("ok")
+        expect(File.read(proxy_log)).to contain("spawning daemon")
+      ensure
+        reap(proxy)
+        lock.close rescue nil
+      end
+    end
+  end
+
   describe "#idempotent_rewrite" do
     let(proxy) { MnemodocServer::DaemonProxy.new(config, config_path) }
 

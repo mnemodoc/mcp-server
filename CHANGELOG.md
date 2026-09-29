@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **The live watch uses the operating system's file events.** FSEvents on
+  macOS, inotify on Linux: an idle daemon on a tree of about 7 300 files went
+  from 6.65 % of a core (1.4.0, polling every second) to nothing measurable.
+  `server.daemon_watch_backend` (env `MNEMODOC_SERVER_WATCH_BACKEND`) picks the
+  backend: `auto` (default) falls back to polling, with an advisory, when file
+  events are unavailable; `native` runs without a live watch in that case,
+  and says so in the log and in an advisory; `poll` always polls.
+  `server.daemon_watch_interval` now applies to polling only.
+- **A directory moved out of the tree, or a configured root renamed away,
+  takes its documents out of the index.** It is reported as one event on the
+  directory, and every indexed file under it is removed.
+- **A configured directory that is deleted and recreated, or created after the
+  daemon started, is watched again** — a `git checkout` of a branch without
+  it, then back — as the poller did by itself on its next pass.
+
+### Changed
+- **Polling costs a third less.** Excluded directories are no longer listed,
+  a file no handler claims is no longer stat-ed or matched against the
+  exclusions, and one editor save — several events — costs one re-index.
+- **A file named explicitly in `paths:` with an extension no handler claims
+  is now re-indexed when it changes.** The initial crawl already indexed it as
+  plain text; the watcher ignored its changes.
+- **Hidden entries below a configured path are ignored by the watch**, as the
+  crawler already ignored them: a change under `.git/` or to `docs/.draft.md`
+  no longer reaches the index. A configured path that is itself hidden, such
+  as `.github/`, is watched as before.
+- **Changes still waiting when the daemon stops are left to the next boot
+  crawl**, which picks them up by modification time, instead of being indexed
+  during shutdown at the cost of one embedding call each.
+
+### Fixed
+- **One daemon per project.** A daemon now holds `daemon.instance.lock` for
+  its whole life; a second one exits at once without opening the index, and a
+  proxy that finds the lock held waits for that daemon — even one too busy to
+  answer its health probe — instead of deleting its socket and starting
+  another. Measured before: 26 daemons for 7 projects, one proxy having
+  started 4 for the same project, orphans each burning hours of CPU.
+- **An idle daemon exits.** Its watcher only noticed the stop signal when a
+  file changed, so the teardown gave up on it and left the index open; in
+  1.4.0 the log line reporting that then hung the process at exit, not
+  serving and still holding the index, for days.
+- **The `file_watcher` shard is no longer a dependency**, and its license notice
+  with it.
+
 ## [1.4.0] - 2026-09-03
 
 ### Added

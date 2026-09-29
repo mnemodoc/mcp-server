@@ -62,6 +62,33 @@ Spectator.describe MnemodocServer::Config do
       config = MnemodocServer::Config.from_yaml("server:\n  daemon_watch_interval: 0")
       expect { config.validate! }.to raise_error(ArgumentError, /daemon_watch_interval/)
     end
+
+    it "defaults the watch backend to auto" do
+      expect(MnemodocServer::Config.from_yaml("").server.daemon_watch_backend).to eq("auto")
+    end
+
+    it "parses the watch backend from YAML" do
+      config = MnemodocServer::Config.from_yaml("server:\n  daemon_watch_backend: native")
+      expect(config.server.daemon_watch_backend).to eq("native")
+    end
+
+    it "overrides the watch backend from MNEMODOC_SERVER_WATCH_BACKEND" do
+      config = MnemodocServer::Config.from_yaml("server:\n  daemon_watch_backend: native")
+      config.apply_env!({"MNEMODOC_SERVER_WATCH_BACKEND" => "poll"})
+      expect(config.server.daemon_watch_backend).to eq("poll")
+    end
+
+    it "rejects a watch backend other than auto, native or poll" do
+      config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nserver:\n  daemon_watch_backend: fsevents")
+      expect { config.validate! }.to raise_error(ArgumentError, /server.daemon_watch_backend must be auto\|native\|poll/)
+    end
+
+    it "accepts each of the three watch backends" do
+      %w[auto native poll].each do |backend|
+        config = MnemodocServer::Config.from_yaml("paths:\n  - doc/\nserver:\n  daemon_watch_backend: #{backend}")
+        expect { config.validate! }.not_to raise_error
+      end
+    end
   end
 
   describe "#apply_env!" do

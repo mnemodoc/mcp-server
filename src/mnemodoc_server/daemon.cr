@@ -2,13 +2,17 @@ module MnemodocServer
   # Per-project daemon: owns the single SQLite index for a project, starts
   # background indexing, and serves MCP over a UNIX domain socket until idle.
   # Launched by `serve --daemon`; the proxy (lot 5) connects to the socket.
-  #
-  # Future extension point: the file-watcher will attach here to trigger
-  # incremental re-indexing when source files change (not implemented yet).
+  # While it runs it also watches the configured paths and re-indexes what
+  # changes (MnemodocServer.watch_and_index).
   class Daemon
     # Builds a daemon for the given project configuration.
     def initialize(@config : Config)
     end
+
+    # The open file carrying the instance lock, kept for the daemon's lifetime:
+    # the lock lives as long as the descriptor, so dropping the reference would
+    # let a finalizer release it.
+    @instance_lock : File? = nil
 
     # Accessor that lets tests stop the daemon without sending a real signal.
     # Nil until #run binds the transport.
@@ -23,7 +27,7 @@ module MnemodocServer
     # used to die with it, leaving the proxy to report only that the daemon
     # never became healthy. The reason goes to the log first.
     def run : Nil
-      run_internal(ready_channel: nil)
+      with_instance_lock { run_internal(ready_channel: nil) }
     rescue ex
       Log.fatal { "daemon failed to start: #{ex.message} (#{ex.class.name})" }
       raise ex
@@ -35,7 +39,36 @@ module MnemodocServer
     # because the file exists before the daemon starts). Minimal surface area:
     # the production path never calls this method.
     def run_with_ready_channel(ready_channel : Channel(Nil)) : Nil
-      run_internal(ready_channel: ready_channel)
+      with_instance_lock { run_internal(ready_channel: ready_channel) }
+    end
+
+    # Runs the block only if this process can become the project's daemon, and
+    # holds the instance lock until it returns. A daemon already running keeps
+    # the lock, and this one returns at once — exit status 0, since a second
+    # spawn is a race the proxy lost, not a failure.
+    #
+    # Taken here and not inside run_internal: its `ensure` deletes the pid file
+    # and stops the collector, which would be the running daemon's. And taken
+    # before anything else, so a daemon that is not going to serve never opens
+    # the store or starts a crawl.
+    private def with_instance_lock(&) : Nil
+      @config.prepare_index_dir!
+      path = @config.daemon_instance_lock_path
+      file = File.open(path, "w")
+      begin
+        file.flock_exclusive(blocking: false)
+      rescue IO::Error
+        file.close
+        Log.info { "a daemon already holds #{path}; exiting" }
+        return
+      end
+      @instance_lock = file
+      begin
+        yield
+      ensure
+        @instance_lock = nil
+        file.close
+      end
     end
 
     # Stops the daemon by stopping its transport. No-op when the transport has

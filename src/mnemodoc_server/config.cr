@@ -45,9 +45,17 @@ module MnemodocServer
     # resources. Must be >= 1.
     property daemon_idle_timeout : Int32 = 600
     # Watch the configured paths and re-index changed files live while the
-    # daemon runs (polling). Set false to keep the boot-time index only.
+    # daemon runs. Set false to keep the boot-time index only.
     property? daemon_watch : Bool = true
-    # Poll interval (seconds) for the live file-watch. Must be >= 1.
+    # How the live watch learns about changes. `auto` uses the operating
+    # system's file events (FSEvents on macOS, inotify on Linux) and falls
+    # back to polling, with an advisory, when they are unavailable. `native`
+    # uses them or nothing: when they fail, the daemon runs without a live
+    # watch and says so in the log and in an advisory — it never polls.
+    # `poll` always polls.
+    property daemon_watch_backend : String = "auto"
+    # Poll interval (seconds) of the poll backend, `auto`'s fallback included.
+    # The native backends ignore it. Must be >= 1.
     property daemon_watch_interval : Int32 = 1
   end
 
@@ -308,6 +316,7 @@ module MnemodocServer
       env_int(env, "MNEMODOC_SERVER_IDLE_TIMEOUT") { |v| @server.daemon_idle_timeout = v }
       env_bool(env, "MNEMODOC_SERVER_DAEMON_WATCH") { |v| @server.daemon_watch = v }
       env_int(env, "MNEMODOC_SERVER_WATCH_INTERVAL") { |v| @server.daemon_watch_interval = v }
+      env["MNEMODOC_SERVER_WATCH_BACKEND"]?.try { |v| @server.daemon_watch_backend = v }
       env["MNEMODOC_DB_PATH"]?.try { |v| @db.path = v }
       env_int(env, "MNEMODOC_INDEX_CONCURRENCY") { |v| @index.concurrency = v }
       env_bool(env, "MNEMODOC_INDEX_PDF") { |v| @index.pdf = v }
@@ -378,6 +387,14 @@ module MnemodocServer
     # the index DB so it is scoped to the same project directory.
     def daemon_lock_path : String
       File.join(File.dirname(db_path), "daemon.lock")
+    end
+
+    # Path to the lock a daemon holds for its whole lifetime, so that a project
+    # has at most one. Distinct from #daemon_lock_path, which the proxy holds
+    # while it spawns and waits: a daemon taking that one would deadlock with
+    # the proxy waiting for it.
+    def daemon_instance_lock_path : String
+      File.join(File.dirname(db_path), "daemon.instance.lock")
     end
 
     # Path to the file holding the running daemon's pid. Lives beside the index
@@ -481,6 +498,7 @@ module MnemodocServer
       errors << "server.sse_port must be 1-65535" unless @server.sse_port.in?(1..65535)
       errors << "server.daemon_idle_timeout must be >= 1" unless @server.daemon_idle_timeout >= 1
       errors << "server.daemon_watch_interval must be >= 1" unless @server.daemon_watch_interval >= 1
+      errors << "server.daemon_watch_backend must be auto|native|poll" unless @server.daemon_watch_backend.in?("auto", "native", "poll")
       errors << "usage.retention_days must be >= 1" unless @usage.retention_days >= 1
       errors << "usage.import_interval must be >= 1" unless @usage.import_interval >= 1
       errors << "hook.similarity_threshold must be between 0 and 1" unless (0.0..1.0).includes?(@hook.similarity_threshold)

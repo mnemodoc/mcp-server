@@ -12,7 +12,6 @@ require "markd"
 require "tallboy"
 
 require "mcp"
-require "file_watcher"
 
 require "file_utils"
 
@@ -56,6 +55,14 @@ require "./mnemodoc_server/indexer/format/pdf"
 require "./mnemodoc_server/indexer/format/registry"
 require "./mnemodoc_server/indexer/embedder"
 require "./mnemodoc_server/indexer/crawler"
+require "./mnemodoc_server/watch/event"
+require "./mnemodoc_server/watch/backend"
+require "./mnemodoc_server/watch/filter"
+require "./mnemodoc_server/watch/entries"
+require "./mnemodoc_server/watch/poll"
+require "./mnemodoc_server/watch/coalescer"
+require "./mnemodoc_server/watch/inotify"
+require "./mnemodoc_server/watch/fsevents"
 require "./mnemodoc_server/store/sqlite_vec"
 require "./mnemodoc_server/store/sqlite"
 require "./mnemodoc_server/store/usage"
@@ -509,23 +516,40 @@ module MnemodocServer
 
     path == config.daemon_socket_path ||
       path == config.daemon_lock_path ||
+      path == config.daemon_instance_lock_path ||
       path == config.daemon_pid_path
   end
 
-  def self.handle_watch_event(event : FileWatcher::Event, config : Config, store : Store::SQLite,
+  # Applies one watch event to the index. *filter* is the gate: the crawler
+  # treats every path it is handed as named explicitly, so what the filter
+  # rejects — an index artifact, an excluded path, a discovered file no
+  # handler claims — must never reach it.
+  def self.handle_watch_event(event : Watch::Event, config : Config, store : Store::SQLite,
                               qi : Store::QdrantIndex?, registry : Indexer::Format::Registry,
-                              embedder : Indexer::Embedder, sf : SingleFlight) : Nil
+                              embedder : Indexer::Embedder, sf : SingleFlight,
+                              filter : Watch::Filter = Watch::Filter.new(config, registry)) : Nil
+    return unless filter.accept?(event)
     path = event.path
-    return if index_artifact?(path, config)
 
-    if event.type.deleted?
-      ids = store.chunk_ids_for_file(path)
-      store.delete_file(path)
-      qi.try(&.delete(ids)) unless ids.empty?
-      Log.info { "watch: removed #{path}" }
+    if event.kind.deleted?
+      # The path may be a directory that is gone — moved out of the tree, or a
+      # root renamed away — reported once with nothing about what it held. The
+      # separator keeps `doc/foo` from taking `doc/foobar/` with it.
+      # Only a path the index does not hold itself can be a directory, so the
+      # prefix lookup is skipped for an indexed file.
+      targets = store.exists?(path) ? [path] : store.file_paths.select(&.starts_with?("#{path}/"))
+      targets.each do |file|
+        ids = store.chunk_ids_for_file(file)
+        # Logged only when something was removed: every deleted path the
+        # filter lets through gets here, never-indexed ones included, and a
+        # branch switch used to fill the audit log with removals that never
+        # happened.
+        next unless store.delete_file(file) > 0
+        qi.try(&.delete(ids)) unless ids.empty?
+        Log.info { "watch: removed #{file}" }
+      end
       return
     end
-    return unless registry.supported?(File.extname(path))
     # Cheap after the first success, and the only chance a daemon that started
     # without a reachable model gets to create its collection before writing to
     # it. See ensure_qdrant!.
@@ -535,59 +559,108 @@ module MnemodocServer
     Log.info { "watch: re-indexed #{path}" }
   end
 
-  # Live-watches the configured paths and re-indexes on change while the daemon
-  # runs. Builds its own embedder/registry/single-flight (long-lived fiber), then
-  # runs FileWatcher in a supervised loop: the shard's poll loop can raise on a
-  # stat race during atomic editor saves, so a crash is logged and the watch is
-  # restarted after a short backoff. Each event is isolated so a bad one never
-  # breaks the loop.
-  #
-  # *stop* is a shutdown signal: closing it makes the loop return at its next
-  # poll. The daemon passes nothing — its watcher is meant to die with the
-  # process — but a caller that outlives the store it handed over needs a way to
-  # wind the loop down first, or it keeps polling against a closed store and a
-  # directory that no longer exists.
-  def self.watch_and_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?,
-                           stop : Channel(Nil)? = nil, sf : SingleFlight = SingleFlight.new) : Nil
-    # Typed as the union the file_watcher shard expects (Enumerable(String | Path)).
-    patterns = [] of String | Path
-    config.resolved_paths.each do |entry|
-      patterns << (File.directory?(entry) ? File.join(entry, "**", "*") : entry)
-    end
-    return if patterns.empty?
-    registry = Indexer::Format::Registry.new(config)
-    embedder = Indexer::Embedder.new(config.ollama)
-    interval = config.server.daemon_watch_interval.seconds
-    Log.info { "watch: live re-index over #{patterns.size} path(s), every #{config.server.daemon_watch_interval}s" }
-    loop do
-      break if stop_requested?(stop)
-      begin
-        FileWatcher.watch(patterns, interval: interval) do |event|
-          # The shard's poll loop has no exit of its own; breaking out of the
-          # block is what returns from it, and the check above then ends the
-          # supervision loop rather than restarting the watch.
-          break if stop_requested?(stop)
-          begin
-            handle_watch_event(event, config, store, qi, registry, embedder, sf)
-          rescue ex
-            # The class is part of the message because the exception may carry
-            # none: DB::PoolRetryAttemptsExceeded, raised when the index file is
-            # gone, logs as a bare colon and says nothing about what happened.
-            Log.error { "watch: failed handling #{event.path}: [#{ex.class}] #{ex.message}" }
-          end
-        end
-      rescue ex
-        Log.error { "watch loop crashed, restarting: [#{ex.class}] #{ex.message}" }
-        sleep 1.second
-      end
-    end
+  # Events waiting for the coalescer. It reads continuously, so this only
+  # absorbs a burst while it takes its lock.
+  WATCH_BACKLOG = 4096
+
+  # The operating system's file-event backend: FSEvents on macOS, inotify on
+  # Linux. Elsewhere there is none, which reads as an unavailable backend.
+  def self.native_watch_backend(filter : Watch::Filter) : Watch::Backend
+    {% if flag?(:darwin) %}
+      Watch::FSEvents.new(filter)
+    {% elsif flag?(:linux) %}
+      Watch::Inotify.new(filter)
+    {% else %}
+      raise Watch::Unavailable.new("no native file events on this platform")
+    {% end %}
   end
 
-  # True once the caller has closed the shutdown signal. A nil signal means
-  # "run until the process does", which is the daemon's case.
-  private def self.stop_requested?(stop : Channel(Nil)?) : Bool
-    return false unless stop
-    stop.closed?
+  # Live-watches the configured paths and re-indexes on change while the daemon
+  # runs, through the backend `server.daemon_watch_backend` selects. Events go
+  # through a coalescer, so one editor save costs one re-index and a slow
+  # embedding never stalls the backend.
+  #
+  # A native backend that cannot run raises Watch::Unavailable: under `auto`
+  # the watch falls back to polling, under `native` it ends — both with an
+  # advisory, since a log line is invisible in some MCP clients. Any other
+  # crash is logged and the backend restarted after a short backoff.
+  #
+  # *stop* is the shutdown signal, and closing it ends the watch within about
+  # a second with no file event needed: the daemon's teardown waits on this
+  # fiber before closing the index. A nil signal means "run until the process
+  # does". *native* builds the native backend, replaceable in specs.
+  def self.watch_and_index(config : Config, store : Store::SQLite, qi : Store::QdrantIndex?,
+                           stop : Channel(Nil)? = nil, sf : SingleFlight = SingleFlight.new,
+                           native : Proc(Watch::Filter, Watch::Backend)? = nil) : Nil
+    registry = Indexer::Format::Registry.new(config)
+    filter = Watch::Filter.new(config, registry)
+    return if filter.roots.empty?
+    embedder = Indexer::Embedder.new(config.ollama)
+    signal = stop || Channel(Nil).new
+    choice = config.server.daemon_watch_backend
+    interval = config.server.daemon_watch_interval
+    poll = -> { Watch::Poll.new(filter, interval.seconds).as(Watch::Backend) }
+    build_native = native || ->(f : Watch::Filter) { native_watch_backend(f) }
+
+    events = Channel(Watch::Event).new(WATCH_BACKLOG)
+    delivered = Channel(Nil).new(1)
+    spawn do
+      Watch::Coalescer.new.run(events) do |event|
+        handle_watch_event(event, config, store, qi, registry, embedder, sf, filter)
+      rescue ex
+        # The class is part of the message because the exception may carry
+        # none: DB::PoolRetryAttemptsExceeded, raised when the index file is
+        # gone, logs as a bare colon and says nothing about what happened.
+        Log.error { "watch: failed handling #{event.path}: [#{ex.class}] #{ex.message}" }
+      end
+    ensure
+      delivered.send(nil)
+    end
+
+    begin
+      backend : Watch::Backend? = nil
+      loop do
+        break if signal.closed?
+        begin
+          # Built inside the rescue: a native backend may be unavailable from
+          # the start, and `auto` must fall back then too.
+          current = backend ||= choice == "poll" ? poll.call : build_native.call(filter)
+          Log.info { "watch: live re-index over #{filter.roots.size} path(s) with #{current.class.name.split("::").last}" }
+          current.run(signal) { |event| events.send(event) }
+          unless signal.closed?
+            # A backend is meant to run until stopped. Returning anyway is a
+            # failure like a crash, and gets the same pause: restarting at once
+            # spun the loop billions of times a minute.
+            Log.warn { "watch: #{current.class.name.split("::").last} stopped on its own, restarting" }
+            select
+            when signal.receive?
+            when timeout(1.second)
+            end
+          end
+        rescue ex : Watch::Unavailable
+          if choice == "native"
+            Log.error { "watch: native file events unavailable (#{ex.message}); no live re-index" }
+            Advisories.add("live watch: native file events unavailable (#{ex.message}); no live re-index until the daemon restarts (server.daemon_watch_backend: native)")
+            break
+          end
+          Log.warn { "watch: native file events unavailable (#{ex.message}); polling every #{interval}s" }
+          Advisories.add("live watch: native file events unavailable (#{ex.message}); polling every #{interval}s instead")
+          choice = "poll"
+          backend = poll.call
+        rescue ex
+          Log.error { "watch loop crashed, restarting: [#{ex.class}] #{ex.message}" }
+          select
+          when signal.receive?
+          when timeout(1.second)
+          end
+        end
+      end
+    ensure
+      # Delivered before returning: the caller closes the store next.
+      events.close
+      delivered.receive
+      embedder.close
+    end
   end
 
   # Runs the standalone stdio MCP server: opens the store, spawns background

@@ -290,6 +290,12 @@ module MnemodocServer
     # success. Connects to an existing daemon when one answers /health; otherwise
     # serialises spawning behind an exclusive advisory lock so racing proxies do
     # not double-spawn, then waits until the new daemon is ready.
+    #
+    # A failed /health does not mean there is no daemon: one busy in a blocking
+    # SQLite write accepts and answers nothing, and one still starting has not
+    # bound yet. The daemon's instance lock is the proof of life. While it is
+    # held the socket is left alone and nothing is spawned — deleting the path
+    # used to leave the live daemon unreachable while a second one took over.
     private def ensure_daemon : Bool
       return true if healthy?
 
@@ -300,12 +306,57 @@ module MnemodocServer
         lock.flock_exclusive do
           # Another proxy may have spawned it while we waited for the lock.
           return true if healthy?
+          unless instance_lock_free?
+            case await_live_daemon
+            in .healthy?   then return true
+            in .timed_out? then return false
+            in .gone?
+              # The holder exited without serving: spawn a replacement below.
+            end
+          end
           # Drop a stale socket left behind by a hard-killed daemon.
           File.delete?(@config.daemon_socket_path)
           spawn_daemon
           await_healthy
         end
       end
+    end
+
+    # How a wait on a daemon holding the instance lock ended.
+    enum LiveDaemon
+      Healthy
+      Gone
+      TimedOut
+    end
+
+    # Waits on a daemon that holds the instance lock: until it answers /health,
+    # until the lock is released (it exited without serving), or until
+    # SPAWN_DEADLINE. The lock is probed on every round, so a holder that dies
+    # while shutting down is replaced rather than waited out.
+    private def await_live_daemon : LiveDaemon
+      deadline = Time.instant + SPAWN_DEADLINE
+      loop do
+        return LiveDaemon::Healthy if healthy?
+        return LiveDaemon::Gone if instance_lock_free?
+        if Time.instant > deadline
+          Log.error { "a daemon holds the instance lock but did not answer within #{SPAWN_DEADLINE.total_seconds}s" }
+          return LiveDaemon::TimedOut
+        end
+        sleep POLL_INTERVAL
+      end
+    end
+
+    # True when no daemon holds the instance lock. Probing takes the lock, so it
+    # is released at once: the daemon about to be spawned must be able to take
+    # it, or it would exit on seeing it held.
+    private def instance_lock_free? : Bool
+      File.open(@config.daemon_instance_lock_path, "w") do |file|
+        file.flock_exclusive(blocking: false)
+        file.flock_unlock
+        true
+      end
+    rescue IO::Error
+      false
     end
 
     # Spawns the daemon fully detached so it outlives this proxy. Its stdio is

@@ -280,6 +280,67 @@ Spectator.describe MnemodocServer::Daemon do
     end
   end
 
+  # A second daemon used to take the socket path over: MCP::Http deletes it
+  # before binding, so the first daemon kept running unreachable, and when its
+  # idle reaper fired it deleted the path again — its successor's by then.
+  describe "#run (second instance)" do
+    it "exits 0 without opening the store or touching the running daemon's files" do
+      binary = File.expand_path(File.join(__DIR__, "..", "bin", "mnemodoc-server"))
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+
+      docs = File.join(tmp_dir, "docs")
+      Dir.mkdir_p(docs)
+      File.write(File.join(docs, "note.md"), "# Note\n\nBody.\n")
+      config_path = File.join(tmp_dir, ".mnemodoc.yml")
+      log_path = File.join(tmp_dir, "second.log")
+      File.write(config_path, <<-YAML)
+      paths:
+        - #{docs}
+      ollama:
+        host: http://127.0.0.1:1
+      db:
+        path: #{File.join(tmp_dir, "index.db")}
+      server:
+        log_level: info
+        log_file: #{log_path}
+        daemon_idle_timeout: 600
+        daemon_watch: false
+      YAML
+      cfg = MnemodocServer::Config.from_yaml(File.read(config_path))
+
+      first = start_daemon(cfg)
+      begin
+        socket_before = File.info(cfg.daemon_socket_path)
+        usage_before = File.info(cfg.usage_socket_path)
+        pid_before = File.read(cfg.daemon_pid_path)
+
+        second = Process.new(binary, ["serve", "--daemon", "--config", config_path],
+          output: Process::Redirect::Close, error: Process::Redirect::Close)
+        exited = Channel(Process::Status).new(1)
+        spawn { exited.send(second.wait) }
+
+        status = select
+        when value = exited.receive
+          value
+        when timeout(10.seconds)
+          nil
+        end
+        second.terminate(graceful: false) rescue nil if status.nil?
+
+        expect(status.try(&.exit_code)).to eq(0)
+        expect(File.info(cfg.daemon_socket_path).same_file?(socket_before)).to be_true
+        expect(File.info(cfg.usage_socket_path).same_file?(usage_before)).to be_true
+        expect(File.read(cfg.daemon_pid_path)).to eq(pid_before)
+        expect(MnemodocServer.daemon_healthy?(cfg)).to be_true
+        # The boot crawl is the first thing a daemon that opened the store does.
+        expect(File.read(log_path)).not_to contain("startup indexing")
+      ensure
+        first.stop
+        sleep 200.milliseconds
+      end
+    end
+  end
+
   # A socket that accepts and then says nothing is not a theoretical case: the
   # daemon does its SQLite writes through blocking C calls that never yield, so
   # during a large vec0 backfill the process holds the listening socket while
