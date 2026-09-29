@@ -95,6 +95,22 @@ require "file_utils"
       end
     end
 
+    # A root written `docs/` in the configuration: its events used to come out
+    # as `docs//guide.md`, so a deletion never matched the indexed path.
+    it "reports a root configured with a trailing slash without doubling it" do
+      backend = MnemodocServer::Watch::FSEvents.new(filter(["#{docs}/"]))
+      events, stop, _done = start(backend)
+      path = File.join(docs, "guide.md")
+      begin
+        File.write(path, "# One")
+        expect(present?(collect(events), path)).to be_true
+        File.delete(path)
+        expect(deleted?(collect(events), path)).to be_true
+      ensure
+        stop.close
+      end
+    end
+
     it "reports create, modify, delete, rename and atomic save within 2 s" do
       backend = MnemodocServer::Watch::FSEvents.new(filter)
       events, stop, _done = start(backend)

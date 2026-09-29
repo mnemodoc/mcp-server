@@ -19,7 +19,12 @@ module MnemodocServer
       @descend = {} of String => Bool
 
       def initialize(@config : Config, @registry : Indexer::Format::Registry)
-        @roots = @config.resolved_paths.uniq
+        # Without a trailing slash: `paths:` entries are routinely written
+        # `doc/`, File.expand_path keeps the slash, and every backend builds
+        # its event paths from these roots — FSEvents by concatenation, which
+        # turned `doc/` into `doc//guide.md`, a path the index never holds, so
+        # deletions were never applied.
+        @roots = @config.resolved_paths.map { |root| root == "/" ? root : root.rstrip('/') }.uniq!
         # A root that is not a directory is a file named explicitly in `paths`,
         # whether or not it exists yet: the registry indexes it whatever its
         # extension.

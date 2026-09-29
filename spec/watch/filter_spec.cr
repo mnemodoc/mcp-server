@@ -92,6 +92,15 @@ Spectator.describe MnemodocServer::Watch::Filter do
     expect(hidden_filter.accept?(event(File.join(hidden_root, "guide.md")))).to be_true
   end
 
+  # `paths:` entries are routinely written `doc/`, and File.expand_path keeps
+  # the slash: a root spelled that way produced event paths with `//` that
+  # matched nothing in the index.
+  it "holds its roots without a trailing slash" do
+    cfg = MnemodocServer::Config.from_yaml("paths:\n  - #{docs}/\ndb:\n  path: #{File.join(tmp_dir, "index.db")}")
+    slashed = MnemodocServer::Watch::Filter.new(cfg, MnemodocServer::Indexer::Format::Registry.new(cfg))
+    expect(slashed.roots).to eq([docs])
+  end
+
   it "does not descend into a directory whose whole subtree is excluded" do
     expect(filter.descend?(File.join(docs, "drafts"))).to be_false
     expect(filter.descend?(File.join(docs, "chapter"))).to be_true
