@@ -1,10 +1,10 @@
 require "../spec_helper"
 require "file_utils"
 
-# Watch::Filter is the only gate between a watch backend and indexing: the
+# The watch filter is the only gate between a watch backend and indexing: the
 # crawler treats every path it is handed as named explicitly, so a file the
 # filter lets through gets indexed — as plain text if nothing else claims it.
-Spectator.describe MnemodocServer::Watch::Filter do
+Spectator.describe "MnemodocServer.watch_filter" do
   let(tmp_dir) { "/tmp/mnemodoc-filter-#{Random::Secure.hex(4)}" }
   let(docs) { File.join(tmp_dir, "docs") }
   let(named) { File.join(tmp_dir, "notes.custom") }
@@ -23,7 +23,7 @@ Spectator.describe MnemodocServer::Watch::Filter do
   end
 
   let(filter) do
-    MnemodocServer::Watch::Filter.new(config, MnemodocServer::Indexer::Format::Registry.new(config))
+    MnemodocServer.watch_filter(config, MnemodocServer::Indexer::Format::Registry.new(config))
   end
 
   before_each do
@@ -32,12 +32,12 @@ Spectator.describe MnemodocServer::Watch::Filter do
   end
   after_each { FileUtils.rm_rf(tmp_dir) }
 
-  private def event(path : String, kind = MnemodocServer::Watch::Event::Kind::Changed)
-    MnemodocServer::Watch::Event.new(path, kind)
+  private def event(path : String, kind = Watch::Event::Kind::Changed)
+    Watch::Event.new(path, kind)
   end
 
   private def deleted(path : String)
-    event(path, MnemodocServer::Watch::Event::Kind::Deleted)
+    event(path, Watch::Event::Kind::Deleted)
   end
 
   it "accepts a discovered document with an indexable extension" do
@@ -88,7 +88,7 @@ Spectator.describe MnemodocServer::Watch::Filter do
     hidden_root = File.join(tmp_dir, ".meta")
     Dir.mkdir_p(hidden_root)
     cfg = MnemodocServer::Config.from_yaml("paths:\n  - #{hidden_root}\ndb:\n  path: #{File.join(tmp_dir, "index.db")}")
-    hidden_filter = MnemodocServer::Watch::Filter.new(cfg, MnemodocServer::Indexer::Format::Registry.new(cfg))
+    hidden_filter = MnemodocServer.watch_filter(cfg, MnemodocServer::Indexer::Format::Registry.new(cfg))
     expect(hidden_filter.accept?(event(File.join(hidden_root, "guide.md")))).to be_true
   end
 
@@ -97,7 +97,7 @@ Spectator.describe MnemodocServer::Watch::Filter do
   # matched nothing in the index.
   it "holds its roots without a trailing slash" do
     cfg = MnemodocServer::Config.from_yaml("paths:\n  - #{docs}/\ndb:\n  path: #{File.join(tmp_dir, "index.db")}")
-    slashed = MnemodocServer::Watch::Filter.new(cfg, MnemodocServer::Indexer::Format::Registry.new(cfg))
+    slashed = MnemodocServer.watch_filter(cfg, MnemodocServer::Indexer::Format::Registry.new(cfg))
     expect(slashed.roots).to eq([docs])
   end
 

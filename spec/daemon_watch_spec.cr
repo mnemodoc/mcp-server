@@ -47,9 +47,9 @@ Spectator.describe "MnemodocServer daemon watch" do
   end
 
   # A native backend that cannot start, as when the kernel refuses a watch.
-  class RefusedBackend < MnemodocServer::Watch::Backend
-    def run(stop : Channel(Nil), &_block : MnemodocServer::Watch::Event ->) : Nil
-      raise MnemodocServer::Watch::Unavailable.new("refused for the spec")
+  class RefusedBackend < Watch::Backend
+    def run(stop : Channel(Nil), &_block : Watch::Event ->) : Nil
+      raise Watch::Unavailable.new("refused for the spec")
     end
   end
 
@@ -73,7 +73,7 @@ Spectator.describe "MnemodocServer daemon watch" do
         path = File.join(tmp_dir, "guide.md")
         File.write(path, "# Guide\n\n## Section\n\nReal content here.")
         MnemodocServer.handle_watch_event(
-          MnemodocServer::Watch::Event.new(path, MnemodocServer::Watch::Event::Kind::Added),
+          Watch::Event.new(path, Watch::Event::Kind::Added),
           h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
         expect(h[:store].list_files.map(&.path)).to contain(path)
       ensure
@@ -89,10 +89,10 @@ Spectator.describe "MnemodocServer daemon watch" do
       begin
         path = File.join(tmp_dir, "gone.md")
         File.write(path, "# Gone\n\n## S\n\nbody")
-        MnemodocServer.handle_watch_event(MnemodocServer::Watch::Event.new(path, MnemodocServer::Watch::Event::Kind::Added),
+        MnemodocServer.handle_watch_event(Watch::Event.new(path, Watch::Event::Kind::Added),
           h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
         File.delete(path)
-        MnemodocServer.handle_watch_event(MnemodocServer::Watch::Event.new(path, MnemodocServer::Watch::Event::Kind::Deleted),
+        MnemodocServer.handle_watch_event(Watch::Event.new(path, Watch::Event::Kind::Deleted),
           h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
         expect(h[:store].list_files.map(&.path)).not_to contain(path)
       ensure
@@ -115,13 +115,13 @@ Spectator.describe "MnemodocServer daemon watch" do
           Dir.mkdir_p(File.dirname(path))
           File.write(path, "# Title\n\n## S\n\nbody")
           MnemodocServer.handle_watch_event(
-            MnemodocServer::Watch::Event.new(path, MnemodocServer::Watch::Event::Kind::Added),
+            Watch::Event.new(path, Watch::Event::Kind::Added),
             h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
         end
         FileUtils.rm_rf(File.join(tmp_dir, "chapter"))
 
         MnemodocServer.handle_watch_event(
-          MnemodocServer::Watch::Event.new(File.join(tmp_dir, "chapter"), MnemodocServer::Watch::Event::Kind::Deleted),
+          Watch::Event.new(File.join(tmp_dir, "chapter"), Watch::Event::Kind::Deleted),
           h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
 
         expect(h[:store].list_files.map(&.path)).to eq([sibling])
@@ -154,14 +154,14 @@ Spectator.describe "MnemodocServer daemon watch" do
         kept = File.join(tmp_dir, "kept.md")
         File.write(kept, "# Kept\n\n## S\n\nbody")
         MnemodocServer.handle_watch_event(
-          MnemodocServer::Watch::Event.new(kept, MnemodocServer::Watch::Event::Kind::Added),
+          Watch::Event.new(kept, Watch::Event::Kind::Added),
           h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
         File.delete(kept)
 
         messages = capture_logs do
           [File.join(tmp_dir, "never.md"), File.join(tmp_dir, "empty-dir"), kept].each do |path|
             MnemodocServer.handle_watch_event(
-              MnemodocServer::Watch::Event.new(path, MnemodocServer::Watch::Event::Kind::Deleted),
+              Watch::Event.new(path, Watch::Event::Kind::Deleted),
               h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
           end
         end
@@ -200,11 +200,11 @@ Spectator.describe "MnemodocServer daemon watch" do
         begin
           path = File.join(tmp_dir, "kept.md")
           File.write(path, "# Kept\n\n## S\n\nbody")
-          MnemodocServer.handle_watch_event(MnemodocServer::Watch::Event.new(path, MnemodocServer::Watch::Event::Kind::Added),
+          MnemodocServer.handle_watch_event(Watch::Event.new(path, Watch::Event::Kind::Added),
             h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
 
           MnemodocServer.handle_watch_event(
-            MnemodocServer::Watch::Event.new("#{tmp_db}-wal", MnemodocServer::Watch::Event::Kind::Deleted),
+            Watch::Event.new("#{tmp_db}-wal", Watch::Event::Kind::Deleted),
             h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
 
           expect(h[:store].list_files.map(&.path)).to contain(path)
@@ -222,7 +222,7 @@ Spectator.describe "MnemodocServer daemon watch" do
       begin
         path = File.join(tmp_dir, "logo.png")
         File.write(path, "not text")
-        MnemodocServer.handle_watch_event(MnemodocServer::Watch::Event.new(path, MnemodocServer::Watch::Event::Kind::Added),
+        MnemodocServer.handle_watch_event(Watch::Event.new(path, Watch::Event::Kind::Added),
           h[:config], h[:store], nil, h[:registry], h[:embedder], h[:sf])
         expect(h[:store].list_files).to be_empty
       ensure
@@ -329,10 +329,10 @@ Spectator.describe "MnemodocServer daemon watch" do
   end
 
   # A backend whose run returns though nobody asked it to stop.
-  class ReturningBackend < MnemodocServer::Watch::Backend
+  class ReturningBackend < Watch::Backend
     getter runs = 0
 
-    def run(stop : Channel(Nil), &_block : MnemodocServer::Watch::Event ->) : Nil
+    def run(stop : Channel(Nil), &_block : Watch::Event ->) : Nil
       @runs += 1
     end
   end
@@ -343,7 +343,7 @@ Spectator.describe "MnemodocServer daemon watch" do
       stop = Channel(Nil).new
       done = Channel(Nil).new
       backend = ReturningBackend.new
-      native = ->(_filter : MnemodocServer::Watch::Filter) { backend.as(MnemodocServer::Watch::Backend) }
+      native = ->(_filter : Watch::Filter) { backend.as(Watch::Backend) }
       begin
         spawn do
           MnemodocServer.watch_and_index(h[:config], h[:store], nil, stop: stop, native: native)
@@ -368,7 +368,7 @@ Spectator.describe "MnemodocServer daemon watch" do
         h = harness(port, backend: "auto")
         stop = Channel(Nil).new
         done = Channel(Nil).new
-        native = ->(_filter : MnemodocServer::Watch::Filter) { RefusedBackend.new.as(MnemodocServer::Watch::Backend) }
+        native = ->(_filter : Watch::Filter) { RefusedBackend.new.as(Watch::Backend) }
         begin
           spawn do
             MnemodocServer.watch_and_index(h[:config], h[:store], nil, stop: stop, native: native)
@@ -390,7 +390,7 @@ Spectator.describe "MnemodocServer daemon watch" do
         h = harness(port, backend: "native")
         stop = Channel(Nil).new
         done = Channel(Nil).new
-        native = ->(_filter : MnemodocServer::Watch::Filter) { RefusedBackend.new.as(MnemodocServer::Watch::Backend) }
+        native = ->(_filter : Watch::Filter) { RefusedBackend.new.as(Watch::Backend) }
         begin
           spawn do
             MnemodocServer.watch_and_index(h[:config], h[:store], nil, stop: stop, native: native)
@@ -419,9 +419,9 @@ Spectator.describe "MnemodocServer daemon watch" do
         stop = Channel(Nil).new
         done = Channel(Nil).new
         started = false
-        native = ->(_filter : MnemodocServer::Watch::Filter) do
+        native = ->(_filter : Watch::Filter) do
           started = true
-          RefusedBackend.new.as(MnemodocServer::Watch::Backend)
+          RefusedBackend.new.as(Watch::Backend)
         end
         begin
           spawn do

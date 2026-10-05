@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **File watching now comes from the `watch` shard** (jbox-web/watch.cr), into
+  which the inotify, FSEvents and polling backends, the coalescer and the
+  backend selection were extracted. No behaviour change: same backends, same
+  fallback, same log lines and advisories. The FSEvents shim is now compiled by
+  the shard itself, so `dev:vec0-objects` no longer builds it.
+
 ## [1.5.1] - 2026-09-29
 
 ### Fixed

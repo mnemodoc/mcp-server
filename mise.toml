@@ -166,15 +166,6 @@ sed -e '/typedef u_int8_t uint8_t;/d' \
 cc -O2 -DSQLITE_CORE -I"$SUBMODULE" -c "$VENDOR/sqlite-vec.patched.c" -o "$VENDOR/sqlite-vec.o"
 cc -O2 -c "$VENDOR/vec0_shim.c" -o "$VENDOR/vec0_shim.o"
 echo "sqlite-vec objects ready"
-
-# The FSEvents bridge of the macOS watch backend (Watch::FSEvents). macOS only:
-# CoreServices does not exist elsewhere, and the Linux backend needs no shim.
-# release:build depends on this task, so the macOS release links it too; the
-# Linux static build (Makefile.release) never references it.
-if [ "$(uname -s)" = "Darwin" ]; then
-  cc -O2 -c "$VENDOR/fsevents_shim.c" -o "$VENDOR/fsevents_shim.o"
-  echo "fsevents shim ready"
-fi
 '''
 
 [tasks."dev:docker-image"]

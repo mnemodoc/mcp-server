@@ -56,3 +56,7 @@ shards:
     git: https://github.com/epoch/tallboy.git
     version: 0.9.3
 
+  watch:
+    git: https://github.com/jbox-web/watch.cr.git
+    version: 0.1.0
+

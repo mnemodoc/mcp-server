@@ -32,6 +32,9 @@ dependencies:
   qdrant-client:
     github: jbox-web/qdrant-client.cr
     version: ~> 0.1
+  watch:
+    github: jbox-web/watch.cr
+    version: ~> 0.1
 
 development_dependencies:
   ameba:
