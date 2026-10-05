@@ -1,3 +1,7 @@
+# Per-task `timeout` keys are only enforced reliably from mise 2026.10.2 on:
+# an older mise must refuse to run instead of leaving those tasks unbounded.
+min_version = "2026.10.2"
+
 [tools]
 crystal = "1.20.3"
 
@@ -50,6 +54,7 @@ description = "Run Crystal spec"
 # in any context that runs dev:spec on its own. Locally that stayed invisible,
 # since dev:check builds before it.
 depends = ["dev:vec0-objects", "dev:licenses", "dev:build"]
+timeout = "600s"
 run = "crystal spec {{vars.SPEC_OPTS}}"
 
 [tasks."dev:docs"]
@@ -64,13 +69,15 @@ depends = ["dev:licenses"]
 run = "rm -rf docs && crystal doc"
 
 # ameba can spin at 100% CPU indefinitely on some inputs, so the task carries its
-# own bound: the analysis is killed after 180s and the task fails with exit 124
-# instead of running for hours unnoticed. Never call `bin/ameba` directly.
-# `timeout` is GNU coreutils: present on the CI Linux runners, requires
-# `brew install coreutils` on macOS.
+# own bound: the analysis is killed after 180s and the task fails with "timed
+# out after 180s" instead of running for hours unnoticed. Never call `bin/ameba`
+# directly. The bound is mise's own task `timeout`, not the coreutils command:
+# it works the same on Linux and macOS (which ships no `timeout`), and mise
+# kills the whole process tree — SIGTERM, then SIGKILL 5s later.
 [tasks."dev:ameba"]
 description = "Run static code analysis"
-run = "timeout 180 bin/ameba"
+timeout = "180s"
+run = "bin/ameba"
 
 # Formatting is checked, not just offered. ameba's Lint/Formatting flags an
 # unformatted file, but only for the paths it inspects and only as one warning
@@ -95,7 +102,8 @@ depends = ["dev:vec0-objects", "dev:licenses", "dev:build"]
 # switches them back off, so drop both flags when the toolchain moves.
 # spec_helper checks for the constant, so a mismatch degrades to a plain
 # single-threaded run rather than a compile error.
-run = "MNEMODOC_SPEC_PARALLEL=1 timeout 600 crystal spec -Dpreview_mt -Dexecution_context {{vars.SPEC_OPTS}}"
+timeout = "600s"
+run = "MNEMODOC_SPEC_PARALLEL=1 crystal spec -Dpreview_mt -Dexecution_context {{vars.SPEC_OPTS}}"
 
 [tasks."dev:check"]
 description = "Build, lint and test in one shot"
