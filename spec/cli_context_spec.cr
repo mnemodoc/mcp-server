@@ -305,7 +305,8 @@ Spectator.describe "context CLI command" do
       emitted = JSON.parse(result[:out])
       expect(emitted["hookSpecificOutput"]["hookEventName"].as_s).to eq("PreToolUse")
       expect(emitted["hookSpecificOutput"]["additionalContext"].as_s)
-        .to eq(File.read(File.join(tmp_dir, "crystal.md")))
+        .to eq(%([mnemodoc context] role=crystal default=false score=3 reason="files: 1 matched (→3) → score 3, net"\n) +
+               File.read(File.join(tmp_dir, "crystal.md")))
     end
 
     # The query channel already reaches the model: UserPromptSubmit stdout is
@@ -322,6 +323,31 @@ Spectator.describe "context CLI command" do
       expect(result[:out]).not_to contain("hookSpecificOutput")
     end
 
+    # The markdown alone does not say how it was chosen: the default fallback
+    # and a decisive score-6 selection read the same. The provenance line the
+    # --json payload already carries goes in front of what the model receives.
+    it "tells the model when the PreToolUse role is the default fallback" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      payload = %({"session_id":"x","hook_event_name":"PreToolUse","tool_name":"Edit","tool_input":{"file_path":"#{tmp_dir}/config/initializers/cors.rb"}})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+
+      expect(result[:code]).to eq(0)
+      context = JSON.parse(result[:out])["hookSpecificOutput"]["additionalContext"].as_s
+      expect(context).to eq(%([mnemodoc context] role=generalist default=true score=0 reason="no matching rule; default role"\n) +
+                            "# Generalist role\nDefault conventions.")
+    end
+
+    it "puts the provenance line ahead of the UserPromptSubmit role" do
+      skip "build the binary first (mise dev:build)" unless File.exists?(binary)
+      write_fixture_with_default
+      payload = %({"session_id":"x","hook_event_name":"UserPromptSubmit","prompt":"ajouter une policy de scope ownership"})
+      result = run_context_stdin(["--config", config_path, "--hook-stdin"], payload)
+
+      expect(result[:out]).to eq(%([mnemodoc context] role=policies default=false score=2 reason="weak rule match, unique candidate → policies (score 2)"\n) +
+                                 "# Policies role\nScope ownership.\n")
+    end
+
     it "keeps flags-only invocation on raw stdout" do
       skip "build the binary first (mise dev:build)" unless File.exists?(binary)
       write_fixture_with_tricky_role
@@ -330,6 +356,7 @@ Spectator.describe "context CLI command" do
       expect(result[:code]).to eq(0)
       expect(result[:out]).to contain("Crystal role")
       expect(result[:out]).not_to contain("hookSpecificOutput")
+      expect(result[:out]).not_to contain("[mnemodoc context]")
     end
 
     # --json is the diagnostic payload, a different format for a different

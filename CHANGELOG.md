@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **The role injected by `context --hook-stdin` now says how it was chosen.**
+  One line goes ahead of the markdown, on both `PreToolUse` and
+  `UserPromptSubmit`: `[mnemodoc context] role=… default=… score=… reason="…"`.
+  The default role returned because no rule matched used to reach the model
+  byte-identical to a role selected on a strong signal; `default=true` now tells
+  them apart. The `--json` payload and the flags-only form are unchanged.
+
 ## [1.5.2] - 2026-10-06
 
 ### Changed

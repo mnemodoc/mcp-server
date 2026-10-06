@@ -718,12 +718,20 @@ sends it to its debug journal — so for that event the CLI wraps the role in th
 envelope the client actually reads:
 
 ```json
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"# Backend role\n…"}}
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"[mnemodoc context] role=backend default=false score=3 reason=\"files: 1 matched (→3) → score 3, net\"\n# Backend role\n…"}}
 ```
 
 `UserPromptSubmit`, an unknown event and the flags-only form keep printing the
 markdown raw, which is what those readers expect. Piping the CLI's stdout
 through anything that reformats it will break the injection.
+
+Under `--hook-stdin` the markdown is preceded by **one provenance line**,
+`[mnemodoc context] role=… default=… score=… reason="…"` — the fields of the
+`--json` payload and of the audit line, under the same names. The markdown alone
+cannot say how it was chosen: the configured default returned because no rule
+matched (`default=true score=0`) is byte-identical to the same role selected on
+a strong signal, and the model would otherwise give both the same weight. The
+flags-only form, run by a human, prints the markdown alone.
 
 A payload carrying no signal at all — empty stdin, malformed JSON, an event the
 adapter does not handle — prints **nothing** and exits 0, leaving one `info`

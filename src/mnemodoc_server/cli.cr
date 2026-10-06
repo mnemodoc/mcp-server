@@ -1138,7 +1138,7 @@ module MnemodocServer
             content:    selection.role.content,
           }.to_json)
         elsif !suppressed
-          emit_role(input, selection.role.content)
+          emit_role(input, selection)
         end
       rescue ex : Roles::NoRolesError | Roles::NeedSignalError | File::Error | Indexer::EmbedderError | Hooks::UnknownClientError
         handle_error(ex, json: flags.json)
@@ -1158,12 +1158,27 @@ module MnemodocServer
       # injected context, and a human running the command in a terminal wants
       # the markdown, not an envelope. Raw text therefore stays the default,
       # including for an event this code does not know.
-      private def emit_role(input : Hooks::HookInput, content : String) : Nil
+      #
+      # On the hook path the markdown is preceded by one provenance line. The
+      # markdown alone cannot say how it was chosen: the default fallback and a
+      # decisive score-6 selection are byte-identical, so the model would give
+      # an unfounded role the same weight as a founded one. The line carries
+      # the fields the --json payload and the audit line already use, under
+      # the same names. A human running the command by hand gets the markdown
+      # alone, as before.
+      private def emit_role(input : Hooks::HookInput, selection : Roles::Selection) : Nil
+        content = selection.role.content
+        content = "#{provenance_line(selection)}\n#{content}" if flags.hook_stdin
         if input.event == "PreToolUse"
           puts({hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: content}}.to_json)
         else
           puts content
         end
+      end
+
+      private def provenance_line(selection : Roles::Selection) : String
+        "[mnemodoc context] role=#{selection.role.name} default=#{selection.default?}" \
+        " score=#{selection.score} reason=#{selection.reason.inspect}"
       end
 
       # True when --hook-stdin yielded nothing to select on: no file, no task,
