@@ -754,3 +754,62 @@ Static binaries built via Docker (`docker-bake.hcl`); the build compiles the `ex
 - **multi-file split since v0.1.9:** at `v0.1.9` the whole extension is the single `sqlite-vec.c`. Newer releases split it into extra translation units (`sqlite-vec-ivf.c`, `sqlite-vec-diskann.c`, …). The build compiles **only `sqlite-vec.c`**, so bumping to such a version would silently produce an *incomplete* extension (link succeeds, features missing). Before any bump run `ls ext/sqlite-vec/sqlite-vec*.c`; if extra `.c` files appear, add each to the `cc` step in `dev:vec0-objects` (mise.toml) and the `vec0:` target (Makefile.release).
 
 In SSE mode the HTTP transport exposes `GET /health` (returns `200 OK`) for liveness probes, and `SIGUSR1` reopens the log file for `logrotate`.
+
+### Releasing
+
+A release is one commit and one tag; everything after the tag is automated
+except merging the Homebrew tap PR.
+
+**Before:** `master` is clean, level with `origin/master`, and its last CI run is
+green. Pick the version by SemVer — a release with no behaviour change is a
+patch.
+
+1. **Bump `shard.yml`** — `version: X.Y.Z`. It is the only place the version is
+   written: `MnemodocServer::VERSION` is read from it at compile time
+   (`shards version`, `helpers.cr`), together with the git ref.
+2. **Close the CHANGELOG section** — `## [Unreleased]` becomes
+   `## [X.Y.Z] - YYYY-MM-DD`, and the link line
+   `[X.Y.Z]: https://github.com/mnemodoc/mcp-server/releases/tag/vX.Y.Z` goes on
+   top of the list at the bottom of the file.
+3. **Commit** — title `Release X.Y.Z`, body one bullet per file
+   (`- shard.yml: version X.Y.Z`, `- CHANGELOG.md: X.Y.Z section and link`).
+4. **Tag and push** — a signed annotated tag on that commit,
+   `git tag -s vX.Y.Z -m "Release X.Y.Z"`, checked with `git tag -v vX.Y.Z`
+   (`Good "git" signature`), then push `master` and the tag. Signing is SSH
+   (`gpg.format ssh`, `user.signingkey`, `tag.gpgSign true` in the global git
+   config; `gpg.ssh.allowedSignersFile` for `-v`), and GitHub shows the tag as
+   Verified once the same key is registered there as a **signing** key. Nothing
+   downstream checks the signature — the workflows trigger on any tag push and
+   only use its name — so a missing key stops `git tag -s` on the machine,
+   never a release already pushed. Older tags are left as published:
+   `v1.1.0`–`v1.4.0` annotated, `v1.0.0`, `v1.5.0` and `v1.5.1` lightweight.
+
+**What the tag sets off:**
+
+- `Release Binaries` (`release_binaries.yml`, any tag) builds and uploads the
+  four binaries with their `.sha256`: Linux amd64/arm64 statically through
+  `mise release:static`, macOS arm64 and amd64 natively through
+  `mise release:deps` + `mise release:build`, which also upload a `.dwarf` and
+  its `.sha256`. `ncipollo/release-action` creates the GitHub release with an
+  empty body — the CHANGELOG is the release notes — and `allowUpdates: true`
+  lets a re-run job replace its assets.
+- `Update Homebrew tap` (`release-tap.yml`) runs when `Release Binaries`
+  succeeds: it downloads the four binaries, computes their SHA256, rewrites
+  `Formula/mnemodoc-server.rb` with `scripts/update_formula.py`, and opens a PR
+  `bump/mnemodoc-server-X.Y.Z` on `mnemodoc/homebrew-tap`. **That PR is merged
+  by hand**; until then `brew upgrade` does not see the release.
+- The vfox plugin (`mnemodoc/vfox-mnemodoc-server`) needs nothing: it lists the
+  repository's tags and downloads the release asset. It therefore offers the
+  version as soon as the tag is pushed, and installing it fails until
+  `Release Binaries` has uploaded the binary.
+
+**The release path is the least tested one.** The macOS jobs of
+`release_binaries.yml` run on a tag push and nowhere else — the CI's
+`build_static_binaries` covers the Linux build only. A change to that workflow
+or to `release:build` is first exercised by the next release, so check every
+job of the run before announcing it.
+
+**Recovery:** a failed job of `Release Binaries` is re-run from the Actions page
+(its assets are replaced). If the tap update did not run or failed, run
+`Update Homebrew tap` by hand (`workflow_dispatch`) with the version without the
+`v` (`X.Y.Z`); it refuses anything that is not a version string.
